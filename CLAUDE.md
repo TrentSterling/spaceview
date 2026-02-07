@@ -15,12 +15,12 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.5)
+## Architecture (v0.5.1)
 
 ### Source Files
 - `src/main.rs` — Entry point, creates eframe window (1024x700)
 - `src/app.rs` — Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens
-- `src/camera.rs` — Continuous Camera: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations
+- `src/camera.rs` — Continuous Camera with bounds clamping: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations. MIN_ZOOM=1.0, MAX_ZOOM=5000
 - `src/scanner.rs` — Recursive directory scanner with progress tracking, elapsed time, scan rate, and cancellation
 - `src/world_layout.rs` — LayoutNode tree in world-space. Lazy expand_visible, prune, ancestor_chain (world_rects used for camera/expand/prune only)
 - `src/treemap.rs` — Squarified treemap layout algorithm (Bruls, Huizing, van Wijk)
@@ -30,9 +30,9 @@ cargo run            # run in debug mode
 - **Two-phase rendering:** Directories render as body→children→header (headers drawn ON TOP of children, never obscured)
 - **Screen-space hit testing:** Hit test mirrors render traversal — runs `treemap::layout` at each level to compute exact screen rects
 - **Text clipping:** All text uses `painter.with_clip_rect()` to prevent spilling beyond rect boundaries
-- **Continuous camera:** No nav_stack — replaced by Camera with center+zoom. Smooth scroll-zoom, drag pan, snap-to animations
+- **Bounded camera:** No nav_stack — Camera with center+zoom, clamped to world bounds. MIN_ZOOM=1.0 (can't zoom past root), MAX_ZOOM=5000 (prevents coordinate overflow). Center clamped so viewport never leaves world_rect
 - **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering
-- **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny
+- **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny. Dynamic expand budget (32 during animation, 8 otherwise)
 - **Color themes:** 3 HSL-based themes (Rainbow, Heatmap, Pastel) — selectable via ComboBox. Colors assigned by depth, never change with zoom
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root
 - **Scan progress:** Shows elapsed time and files/sec rate during scans

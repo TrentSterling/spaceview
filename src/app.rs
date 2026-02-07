@@ -12,7 +12,7 @@ const MIN_SCREEN_PX: f32 = 2.0;
 const HEADER_PX: f32 = 16.0;
 const PAD_PX: f32 = 2.0;
 const BORDER_PX: f32 = 1.0;
-const VERSION: &str = "0.5.0";
+const VERSION: &str = "0.5.1";
 
 // ===================== Color Theme =====================
 
@@ -203,6 +203,7 @@ impl SpaceViewApp {
             let aspect = viewport.height() / viewport.width();
             let layout = WorldLayout::new(root, aspect);
             self.camera.reset(layout.world_rect);
+            self.camera.set_world_rect(layout.world_rect);
             self.world_layout = Some(layout);
             self.root_name = root.name.clone();
             self.root_size = root.size;
@@ -224,6 +225,7 @@ impl SpaceViewApp {
             };
 
             let layout = WorldLayout::new(root, new_aspect);
+            self.camera.set_world_rect(layout.world_rect);
             self.world_layout = Some(layout);
 
             // Scale the camera center Y proportionally
@@ -581,7 +583,7 @@ impl eframe::App for SpaceViewApp {
             }
 
             // 1. Advance camera animation
-            let camera_moving = self.camera.tick(dt);
+            let camera_moving = self.camera.tick(dt, viewport);
 
             // 2. Handle input
             let response = ui.allocate_rect(viewport, egui::Sense::click_and_drag());
@@ -595,7 +597,7 @@ impl eframe::App for SpaceViewApp {
             if mouse_in_viewport && scroll_y.abs() > 0.1 {
                 if let Some(pos) = mouse_pos {
                     let world_focus = self.camera.screen_to_world(pos, viewport);
-                    self.camera.scroll_zoom(scroll_y / 120.0, world_focus);
+                    self.camera.scroll_zoom(scroll_y / 120.0, world_focus, viewport);
                 }
             }
 
@@ -606,7 +608,7 @@ impl eframe::App for SpaceViewApp {
                 // Convert screen delta to world delta
                 let scale = self.camera.zoom * viewport.width();
                 let world_delta = egui::vec2(delta.x / scale, delta.y / scale);
-                self.camera.drag_pan(world_delta);
+                self.camera.drag_pan(world_delta, viewport);
             }
 
             if response.drag_stopped_by(egui::PointerButton::Primary) {
@@ -646,7 +648,8 @@ impl eframe::App for SpaceViewApp {
             if let (Some(ref mut layout), Some(ref root)) =
                 (&mut self.world_layout, &self.scan_root)
             {
-                layout.expand_visible(root, &self.camera, viewport);
+                let budget = if self.camera.is_animating() { 32 } else { 8 };
+                layout.expand_visible(root, &self.camera, viewport, budget);
                 layout.maybe_prune(&self.camera, viewport);
             }
 

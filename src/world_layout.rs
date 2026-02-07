@@ -61,8 +61,7 @@ impl WorldLayout {
 
     /// Expand directories that are large enough on screen but not yet expanded.
     /// Caps expansions per call to prevent hitches.
-    pub fn expand_visible(&mut self, file_root: &FileNode, camera: &crate::camera::Camera, viewport: egui::Rect) {
-        let max_expansions = 8;
+    pub fn expand_visible(&mut self, file_root: &FileNode, camera: &crate::camera::Camera, viewport: egui::Rect, max_expansions: usize) {
         let mut expansions = 0;
 
         expand_recursive(

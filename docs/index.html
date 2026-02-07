@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpaceView — Disk Space Visualizer</title>
+    <meta name="description" content="A fast, visual disk space analyzer inspired by SpaceMonger. Built with Rust + egui.">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --bg2: #161b22;
+            --bg3: #21262d;
+            --text: #e6edf3;
+            --text-dim: #8b949e;
+            --accent: #4361ee;
+            --accent2: #f72585;
+            --accent3: #4cc9f0;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Animated treemap background */
+        .hero-bg {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 600px;
+            overflow: hidden;
+            opacity: 0.12;
+            z-index: 0;
+        }
+        .hero-bg .block {
+            position: absolute;
+            border-radius: 4px;
+            animation: pulse 4s ease-in-out infinite alternate;
+        }
+        @keyframes pulse {
+            from { opacity: 0.4; }
+            to { opacity: 1; }
+        }
+
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 0 24px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Nav */
+        nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 0;
+        }
+        nav .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 20px;
+            font-weight: 700;
+            text-decoration: none;
+            color: var(--text);
+        }
+        nav .logo img { width: 32px; height: 32px; }
+        nav .links { display: flex; gap: 24px; }
+        nav .links a {
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+        nav .links a:hover { color: var(--text); }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 80px 0 60px;
+        }
+        .hero h1 {
+            font-size: 56px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hero .tagline {
+            font-size: 22px;
+            color: var(--text-dim);
+            margin-bottom: 40px;
+            max-width: 540px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .hero .buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #5a7df4);
+            color: white;
+        }
+        .btn-secondary {
+            background: var(--bg3);
+            color: var(--text);
+            border: 1px solid #30363d;
+        }
+
+        .version-badge {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 4px 12px;
+            background: var(--bg3);
+            border-radius: 20px;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        /* Screenshot */
+        .screenshot {
+            text-align: center;
+            padding: 40px 0 80px;
+        }
+        .screenshot-frame {
+            background: var(--bg2);
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 800px;
+            margin: 0 auto;
+            color: var(--text-dim);
+            font-size: 14px;
+        }
+        .screenshot-frame img {
+            width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+        }
+
+        /* Features */
+        .features {
+            padding: 80px 0;
+            border-top: 1px solid #21262d;
+        }
+        .features h2 {
+            text-align: center;
+            font-size: 36px;
+            margin-bottom: 48px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 24px;
+        }
+        .feature-card {
+            background: var(--bg2);
+            border: 1px solid #21262d;
+            border-radius: 12px;
+            padding: 28px;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .feature-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+        .feature-card .icon {
+            font-size: 28px;
+            margin-bottom: 12px;
+        }
+        .feature-card h3 {
+            font-size: 18px;
+            margin-bottom: 8px;
+        }
+        .feature-card p {
+            color: var(--text-dim);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* Controls */
+        .controls {
+            padding: 80px 0;
+            border-top: 1px solid #21262d;
+        }
+        .controls h2 {
+            text-align: center;
+            font-size: 36px;
+            margin-bottom: 48px;
+        }
+        .controls-table {
+            max-width: 560px;
+            margin: 0 auto;
+        }
+        .control-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 14px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .control-key {
+            background: var(--bg3);
+            padding: 4px 14px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .control-action {
+            color: var(--text-dim);
+        }
+
+        /* Install */
+        .install {
+            padding: 80px 0;
+            border-top: 1px solid #21262d;
+        }
+        .install h2 {
+            text-align: center;
+            font-size: 36px;
+            margin-bottom: 48px;
+        }
+        .install-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        @media (max-width: 640px) {
+            .install-options { grid-template-columns: 1fr; }
+        }
+        .install-card {
+            background: var(--bg2);
+            border: 1px solid #21262d;
+            border-radius: 12px;
+            padding: 28px;
+        }
+        .install-card h3 {
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+        .install-card code {
+            display: block;
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.8;
+            overflow-x: auto;
+            color: var(--accent3);
+        }
+        .install-card p {
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-top: 12px;
+        }
+
+        /* Footer */
+        footer {
+            padding: 40px 0;
+            border-top: 1px solid #21262d;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 14px;
+        }
+        footer a { color: var(--accent3); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<!-- Animated treemap background blocks -->
+<div class="hero-bg">
+    <div class="block" style="left:2%;top:5%;width:35%;height:45%;background:#4361ee;animation-delay:0s"></div>
+    <div class="block" style="left:39%;top:5%;width:18%;height:20%;background:#f72585;animation-delay:0.5s"></div>
+    <div class="block" style="left:59%;top:5%;width:39%;height:30%;background:#7209b7;animation-delay:1s"></div>
+    <div class="block" style="left:39%;top:27%;width:18%;height:23%;background:#3a0ca3;animation-delay:1.5s"></div>
+    <div class="block" style="left:2%;top:52%;width:28%;height:20%;background:#4cc9f0;animation-delay:2s"></div>
+    <div class="block" style="left:32%;top:52%;width:25%;height:20%;background:#560bad;animation-delay:0.8s"></div>
+    <div class="block" style="left:59%;top:37%;width:39%;height:35%;background:#4361ee;animation-delay:1.2s"></div>
+</div>
+
+<div class="container">
+    <nav>
+        <a href="#" class="logo">
+            <img src="assets/icon.svg" alt="SpaceView icon">
+            SpaceView
+        </a>
+        <div class="links">
+            <a href="#features">Features</a>
+            <a href="#controls">Controls</a>
+            <a href="#install">Install</a>
+            <a href="https://github.com/TrentSterling/SpaceView">GitHub</a>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <h1>SpaceView</h1>
+        <p class="tagline">See where your disk space goes. A fast, visual disk space analyzer inspired by SpaceMonger.</p>
+        <div class="buttons">
+            <a href="https://github.com/TrentSterling/SpaceView/releases/latest" class="btn btn-primary">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Download for Windows
+            </a>
+            <a href="https://github.com/TrentSterling/SpaceView" class="btn btn-secondary">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                View Source
+            </a>
+        </div>
+        <div class="version-badge">v0.5.1 &mdash; 3.6 MB standalone .exe</div>
+    </section>
+
+    <section class="screenshot">
+        <div class="screenshot-frame">
+            <!-- Replace with actual screenshot: <img src="assets/screenshot.png" alt="SpaceView screenshot"> -->
+            [ Screenshot placeholder &mdash; add docs/assets/screenshot.png ]
+        </div>
+    </section>
+
+    <section class="features" id="features">
+        <h2>Features</h2>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="icon">&#x25A3;</div>
+                <h3>Treemap Visualization</h3>
+                <p>Squarified treemap layout shows every file and folder as a proportionally-sized rectangle. Spot space hogs instantly.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x2197;</div>
+                <h3>Smooth Navigation</h3>
+                <p>Continuous zoom and pan with animated snap-to transitions. Scroll to zoom, double-click to dive in, right-click to zoom out.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x26A1;</div>
+                <h3>Fast Scanning</h3>
+                <p>Recursive directory scanner with real-time progress. See file count, total size, elapsed time, and scan rate as it runs.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x1F3A8;</div>
+                <h3>Color Themes</h3>
+                <p>Three built-in HSL color themes: Rainbow, Heatmap, and Pastel. Colors assigned by depth for instant visual hierarchy.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x1F4E6;</div>
+                <h3>Tiny &amp; Portable</h3>
+                <p>~3.6 MB standalone executable. No installer, no runtime dependencies. Just download and run.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x1F517;</div>
+                <h3>Breadcrumb Trail</h3>
+                <p>Always know where you are. Click any breadcrumb to jump to that directory level. Zoom indicator shows current magnification.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="controls" id="controls">
+        <h2>Controls</h2>
+        <div class="controls-table">
+            <div class="control-row">
+                <span class="control-key">Scroll</span>
+                <span class="control-action">Zoom in / out at cursor</span>
+            </div>
+            <div class="control-row">
+                <span class="control-key">Double-click</span>
+                <span class="control-action">Snap zoom into folder</span>
+            </div>
+            <div class="control-row">
+                <span class="control-key">Right-click</span>
+                <span class="control-action">Zoom out to parent</span>
+            </div>
+            <div class="control-row">
+                <span class="control-key">Drag</span>
+                <span class="control-action">Pan the view</span>
+            </div>
+            <div class="control-row">
+                <span class="control-key">Backspace / Esc</span>
+                <span class="control-action">Zoom out to parent</span>
+            </div>
+            <div class="control-row">
+                <span class="control-key">Breadcrumbs</span>
+                <span class="control-action">Click to jump to any level</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="install" id="install">
+        <h2>Install</h2>
+        <div class="install-options">
+            <div class="install-card">
+                <h3>Download</h3>
+                <code>spaceview.exe</code>
+                <p>Grab the latest .exe from <a href="https://github.com/TrentSterling/SpaceView/releases/latest" style="color:var(--accent3)">GitHub Releases</a>. No installation needed.</p>
+            </div>
+            <div class="install-card">
+                <h3>Build from Source</h3>
+                <code>git clone https://github.com/TrentSterling/SpaceView.git<br>cd SpaceView<br>cargo build --release</code>
+                <p>Requires <a href="https://rustup.rs/" style="color:var(--accent3)">Rust</a> (edition 2021).</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <p>Made by <a href="https://github.com/TrentSterling">tront</a> &mdash; Inspired by <a href="https://en.wikipedia.org/wiki/SpaceMonger">SpaceMonger</a></p>
+    </footer>
+</div>
+
+</body>
+</html>

@@ -1,5 +1,8 @@
 use eframe::egui;
 
+const MAX_ZOOM: f32 = 5_000.0;
+const MIN_ZOOM: f32 = 1.0;
+
 /// Continuous camera for world-space treemap viewing.
 /// Supports smooth scroll-zoom, click-drag pan, and snap-zoom animations.
 pub struct Camera {
@@ -12,11 +15,32 @@ pub struct Camera {
     anim_start_zoom: f32,
     anim_progress: f32,
     animating: bool,
+    // World bounds
+    world_rect: egui::Rect,
 }
 
 /// Ease-out cubic: fast start, smooth deceleration
 fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+fn clamp_point(center: &mut egui::Pos2, zoom: f32, viewport: egui::Rect, wr: egui::Rect) {
+    let half_w = 0.5 / zoom;
+    let half_h = (viewport.height() / viewport.width()) * 0.5 / zoom;
+
+    // X axis
+    if wr.width() <= half_w * 2.0 {
+        center.x = wr.center().x;
+    } else {
+        center.x = center.x.clamp(wr.min.x + half_w, wr.max.x - half_w);
+    }
+
+    // Y axis
+    if wr.height() <= half_h * 2.0 {
+        center.y = wr.center().y;
+    } else {
+        center.y = center.y.clamp(wr.min.y + half_h, wr.max.y - half_h);
+    }
 }
 
 const SNAP_DURATION: f32 = 0.35; // seconds
@@ -35,7 +59,18 @@ impl Camera {
             anim_start_zoom: zoom,
             anim_progress: 0.0,
             animating: false,
+            world_rect: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
         }
+    }
+
+    /// Set the world bounds for camera clamping.
+    pub fn set_world_rect(&mut self, rect: egui::Rect) {
+        self.world_rect = rect;
+    }
+
+    /// Whether the camera is currently animating a snap-to.
+    pub fn is_animating(&self) -> bool {
+        self.animating
     }
 
     /// Reset camera to show the full world rect.
@@ -46,6 +81,7 @@ impl Camera {
         self.target_center = c;
         self.target_zoom = 1.0;
         self.animating = false;
+        self.world_rect = world_rect;
     }
 
     /// Transform a world-space rect to screen-space.
@@ -73,9 +109,18 @@ impl Camera {
         )
     }
 
+    /// Clamp center so the viewport always stays within world_rect.
+    /// If the world is smaller than the viewport in a dimension, center it.
+    fn clamp_center(&mut self, viewport: egui::Rect) {
+        let wr = self.world_rect; // copy to avoid borrow conflicts
+
+        clamp_point(&mut self.target_center, self.target_zoom, viewport, wr);
+        clamp_point(&mut self.center, self.zoom, viewport, wr);
+    }
+
     /// Advance animations. Call once per frame.
     /// Returns true if the camera is still moving (request_repaint needed).
-    pub fn tick(&mut self, dt: f32) -> bool {
+    pub fn tick(&mut self, dt: f32, viewport: egui::Rect) -> bool {
         if self.animating {
             self.anim_progress += dt / SNAP_DURATION;
             if self.anim_progress >= 1.0 {
@@ -91,6 +136,7 @@ impl Camera {
                 );
                 self.zoom = self.anim_start_zoom + (self.target_zoom - self.anim_start_zoom) * t;
             }
+            self.clamp_center(viewport);
             return true;
         }
 
@@ -118,24 +164,24 @@ impl Camera {
             self.center = self.target_center;
         }
 
+        if moving {
+            self.clamp_center(viewport);
+        }
+
         moving
     }
 
     /// Scroll-zoom centered on a world point (the point under cursor stays fixed).
-    pub fn scroll_zoom(&mut self, scroll_delta: f32, world_focus: egui::Pos2) {
+    pub fn scroll_zoom(&mut self, scroll_delta: f32, world_focus: egui::Pos2, viewport: egui::Rect) {
         // Interrupt snap animation — user takes manual control
         if self.animating {
             self.animating = false;
         }
 
         let factor = (1.0 + SCROLL_ZOOM_SPEED).powf(scroll_delta);
-        let new_zoom = (self.target_zoom * factor).clamp(0.5, 100_000.0);
+        let new_zoom = (self.target_zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
 
         // Adjust center so that world_focus stays at the same screen position.
-        // screen_pos = (world_focus - center) * zoom * vp_w + vp_center
-        // We want this to be the same before and after:
-        // (world_focus - old_center) * old_zoom = (world_focus - new_center) * new_zoom
-        // new_center = world_focus - (world_focus - old_center) * old_zoom / new_zoom
         let old_zoom = self.target_zoom;
         let ratio = old_zoom / new_zoom;
         self.target_center = egui::pos2(
@@ -143,16 +189,18 @@ impl Camera {
             world_focus.y - (world_focus.y - self.target_center.y) * ratio,
         );
         self.target_zoom = new_zoom;
+        self.clamp_center(viewport);
     }
 
     /// Immediate pan by a world-space delta.
-    pub fn drag_pan(&mut self, world_delta: egui::Vec2) {
+    pub fn drag_pan(&mut self, world_delta: egui::Vec2, viewport: egui::Rect) {
         if self.animating {
             self.animating = false;
         }
         self.target_center -= world_delta;
         // Snap directly for responsive dragging
         self.center = self.target_center;
+        self.clamp_center(viewport);
     }
 
     /// Animated snap-zoom so that `world_rect` fills the viewport.
@@ -162,11 +210,13 @@ impl Camera {
 
         self.target_center = world_rect.center();
         // Zoom so the rect fills the viewport (fit shorter axis)
+        // zoom * vp_w * world_w = vp_w → zoom = 1/world_w
         let zoom_w = 1.0 / world_rect.width();
-        let zoom_h = viewport.width() / (world_rect.height() * viewport.width());
-        // zoom such that world_rect width = viewport width → zoom * vp_w * world_w = vp_w → zoom = 1/world_w
-        // but also consider height: zoom * vp_w * world_h = vp_h → zoom = vp_h / (vp_w * world_h)
-        self.target_zoom = zoom_w.min(zoom_h);
+        // zoom * vp_w * world_h = vp_h → zoom = vp_h / (vp_w * world_h)
+        let zoom_h = viewport.height() / (world_rect.height() * viewport.width());
+        self.target_zoom = zoom_w.min(zoom_h).clamp(MIN_ZOOM, MAX_ZOOM);
+
+        self.clamp_center(viewport);
 
         self.anim_progress = 0.0;
         self.animating = true;

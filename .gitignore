@@ -1,6 +1,9 @@
 # Build artifacts
 /target/
 
+# Claude Code
+/.claude/
+
 # Reference sample repos (local only)
 /SAMPLES/
 
