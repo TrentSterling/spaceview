@@ -23,10 +23,8 @@
 
 ---
 
-<!-- SCREENSHOT: Replace this with an actual screenshot of SpaceView -->
-<!-- To add: take a screenshot of SpaceView scanning C:\ drive, save as docs/assets/screenshot.png -->
 <p align="center">
-  <code>[ Screenshot placeholder — add docs/assets/screenshot.png ]</code>
+  <img src="docs/assets/screenshot.png" alt="SpaceView scanning a drive" width="900" />
 </p>
 
 ---
