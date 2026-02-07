@@ -1,0 +1,16 @@
+# Build artifacts
+/target/
+
+# Reference sample repos (local only)
+/SAMPLES/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store

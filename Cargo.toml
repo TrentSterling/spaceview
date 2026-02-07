@@ -1,0 +1,16 @@
+[package]
+name = "spaceview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+jwalk = "0.8"
+rfd = "0.15"
+sysinfo = "0.33"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
