@@ -35,20 +35,18 @@
 
 ## Features
 
-- **Treemap Visualization** — Squarified treemap layout shows files and folders as proportionally-sized rectangles
-- **Instant Navigation** — Scroll to zoom, double-click to dive into folders, right-click to zoom out
-- **Smooth Camera** — Continuous zoom and pan with animated transitions
-- **Camera Bounds** — Can't zoom past the root or pan into empty space
-- **3 Color Themes** — Rainbow, Heatmap, and Pastel color schemes
-- **Live Scan Progress** — See files/sec rate and elapsed time during scans
-- **Breadcrumb Trail** — Always know where you are in the directory tree
-- **Tiny Binary** — ~3.6 MB standalone .exe, no installer needed
+- **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Spot space hogs at a glance.
+- **Instant Navigation.** Scroll to zoom, double-click to dive in, right-click to zoom out. Smooth animated transitions.
+- **3 Color Themes.** Rainbow, Heatmap, and Pastel. Colors assigned by depth for instant visual hierarchy.
+- **Live Scan Progress.** Real-time file count, total size, and scan rate. See elapsed time and files/sec as it runs.
+- **Breadcrumb Trail.** Always know where you are in the directory tree. Click any crumb to jump back.
+- **Tiny Binary.** ~3.6 MB standalone .exe. No installer, no runtime dependencies. Just download and run.
 
 ## Quick Start
 
 ### Download
 
-Grab the latest `spaceview.exe` from the [Releases](https://github.com/TrentSterling/SpaceView/releases/latest) page. No installation required — just run it.
+Grab the latest `spaceview.exe` from the [Releases](https://github.com/TrentSterling/SpaceView/releases/latest) page. No installation required. Just run it.
 
 ### Build from Source
 
@@ -75,9 +73,9 @@ The binary will be at `target/release/spaceview.exe`.
 
 ## How It Works
 
-SpaceView scans your selected drive or folder, then displays a [squarified treemap](https://www.win.tue.nl/~vanwijk/stm.pdf) where each rectangle's area is proportional to its file/folder size. Larger items are immediately visible — you can spot space hogs at a glance.
+SpaceView scans your selected drive or folder, then displays a [squarified treemap](https://www.win.tue.nl/~vanwijk/stm.pdf) where each rectangle's area is proportional to its file/folder size. Larger items are immediately visible. You can spot space hogs at a glance.
 
-The treemap uses **screen-space rendering** (like the original SpaceMonger) — child rectangles are laid out in screen pixels with fixed 16px headers, ensuring consistent visual proportions at any zoom level.
+The treemap uses **screen-space rendering** like the original SpaceMonger. Child rectangles are laid out in screen pixels with fixed 16px headers, ensuring consistent visual proportions at any zoom level.
 
 ### Architecture
 
@@ -92,10 +90,10 @@ src/
 ```
 
 **Key design decisions:**
-- Screen-space child layout — no world-space proportional mismatch
-- Two-phase rendering — headers always drawn on top of children
-- Lazy level-of-detail — only expand visible directories, prune off-screen ones
-- Bounded camera — zoom clamped to [1x, 5000x], pan clamped to world bounds
+- Screen-space child layout. No world-space proportional mismatch.
+- Two-phase rendering. Headers always drawn on top of children.
+- Lazy level-of-detail. Only expand visible directories, prune off-screen ones.
+- Bounded camera. Zoom clamped to [1x, 5000x], pan clamped to world bounds.
 
 ## Tech Stack
 
@@ -108,7 +106,7 @@ src/
 
 ## Acknowledgments
 
-Inspired by [SpaceMonger](https://en.wikipedia.org/wiki/SpaceMonger) by Sean Werkema — the original treemap disk visualizer for Windows.
+Inspired by [SpaceMonger](https://en.wikipedia.org/wiki/SpaceMonger) by Sean Werkema. The original treemap disk visualizer for Windows.
 
 ## License
 
