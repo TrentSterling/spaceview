@@ -1,50 +1,108 @@
+use crate::camera::Camera;
 use crate::scanner::{FileNode, ScanProgress, scan_directory};
 use crate::treemap;
+use crate::world_layout::{LayoutNode, WorldLayout};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-// --- Performance constants ---
-const MAX_DRAW_RECTS: usize = 6000;
-const MAX_DEPTH: usize = 5;
-const MIN_RECT_PX: f32 = 3.0;
-const SCROLL_THRESHOLD: f32 = 5.0;
-const SCROLL_COOLDOWN_SECS: f64 = 0.25;
-const ZOOM_ANIM_DURATION: f64 = 0.25; // seconds
+const ZOOM_FRAME_WIDTH: f32 = 4.0;
+const MIN_SCREEN_PX: f32 = 2.0;
+const HEADER_PX: f32 = 16.0;
+const PAD_PX: f32 = 2.0;
+const BORDER_PX: f32 = 1.0;
+const VERSION: &str = "0.5.0";
 
-// --- Cached draw rect ---
-#[derive(Clone)]
-struct DrawRect {
-    rect: egui::Rect,
-    depth: usize,
-    name: String,
-    size: u64,
-    is_dir: bool,
-    has_children: bool,
-    /// Index path from current root (sorted order at each level)
-    sorted_path: Vec<usize>,
-    /// Top-level color index (inherited by children for visual grouping)
-    color_index: usize,
+// ===================== Color Theme =====================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColorTheme {
+    Rainbow,
+    Heatmap,
+    Pastel,
 }
 
-// --- Zoom animation state ---
-struct ZoomAnim {
-    start_time: f64,
-    duration: f64,
-    /// The rect in the NEW layout that we're zooming from (zoom-in) or to (zoom-out)
-    focus_rect: egui::Rect,
-    /// The viewport rect (full treemap area)
-    viewport: egui::Rect,
-    zooming_in: bool,
+impl ColorTheme {
+    fn base_rgb(self, depth: usize) -> (u8, u8, u8) {
+        match self {
+            ColorTheme::Rainbow => {
+                let hue = (depth as f32 * 45.0) % 360.0;
+                hsl_to_rgb(hue, 0.65, 0.55)
+            }
+            ColorTheme::Heatmap => {
+                let hue = (depth as f32 * 270.0 / 7.0) % 270.0;
+                hsl_to_rgb(hue, 0.70, 0.50)
+            }
+            ColorTheme::Pastel => {
+                let hue = (depth as f32 * 45.0) % 360.0;
+                hsl_to_rgb(hue, 0.40, 0.72)
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ColorTheme::Rainbow => "Rainbow",
+            ColorTheme::Heatmap => "Heatmap",
+            ColorTheme::Pastel => "Pastel",
+        }
+    }
 }
 
-/// Ease-out cubic: fast start, smooth deceleration
-fn ease_out_cubic(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(3)
+const THEMES: [ColorTheme; 3] = [ColorTheme::Rainbow, ColorTheme::Heatmap, ColorTheme::Pastel];
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h2 = h / 60.0;
+    let x = c * (1.0 - (h2 % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = if h2 < 1.0 {
+        (c, x, 0.0)
+    } else if h2 < 2.0 {
+        (x, c, 0.0)
+    } else if h2 < 3.0 {
+        (0.0, c, x)
+    } else if h2 < 4.0 {
+        (0.0, x, c)
+    } else if h2 < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = l - c / 2.0;
+    (
+        ((r1 + m) * 255.0) as u8,
+        ((g1 + m) * 255.0) as u8,
+        ((b1 + m) * 255.0) as u8,
+    )
 }
 
-// --- Main app ---
+// ===================== Preferences =====================
+
+fn prefs_path() -> Option<PathBuf> {
+    std::env::var("APPDATA").ok().map(|appdata| {
+        PathBuf::from(appdata).join("SpaceView").join("prefs.txt")
+    })
+}
+
+fn load_hide_welcome() -> bool {
+    prefs_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim() == "hide_welcome=true")
+        .unwrap_or(false)
+}
+
+fn save_hide_welcome(hide: bool) {
+    if let Some(p) = prefs_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, if hide { "hide_welcome=true" } else { "hide_welcome=false" });
+    }
+}
+
+// ===================== Main App =====================
+
 pub struct SpaceViewApp {
     // Scan state
     scan_root: Option<FileNode>,
@@ -52,27 +110,47 @@ pub struct SpaceViewApp {
     scan_progress: Option<Arc<ScanProgress>>,
     scan_receiver: Option<std::sync::mpsc::Receiver<Option<FileNode>>>,
 
-    // Navigation
-    nav_stack: Vec<usize>,
-    nav_generation: u64,
-
-    // Layout cache — only recomputed on nav change or resize
-    cached_rects: Vec<DrawRect>,
-    cache_nav_gen: u64,
-    cache_rect: egui::Rect,
-    // Cached info for status bar (avoid re-traversing tree each frame)
-    cached_current_name: String,
-    cached_current_size: u64,
-    cached_current_count: usize,
+    // Camera + layout
+    camera: Camera,
+    world_layout: Option<WorldLayout>,
+    last_viewport: egui::Rect,
 
     // Interaction
-    hovered_idx: Option<usize>,
-    last_scroll_time: f64,
+    hovered_node_info: Option<HoveredInfo>,
+    is_dragging: bool,
+    /// Current depth context from camera center (for breadcrumbs/zoom frame)
+    depth_context: Vec<BreadcrumbEntry>,
 
-    // Zoom animation
-    zoom_anim: Option<ZoomAnim>,
-    /// After zoom-out nav, the sorted index we need to find in the new parent layout
-    pending_zoom_out_index: Option<usize>,
+    // Cached status bar info
+    root_name: String,
+    root_size: u64,
+
+    // Last frame time for dt calculation
+    last_time: f64,
+
+    // Theme
+    theme: ColorTheme,
+
+    // Welcome / About
+    hide_welcome: bool,
+    show_about: bool,
+}
+
+#[derive(Clone)]
+struct HoveredInfo {
+    name: String,
+    size: u64,
+    is_dir: bool,
+    world_rect: egui::Rect,
+    has_children: bool,
+    screen_rect: egui::Rect,
+}
+
+#[derive(Clone)]
+struct BreadcrumbEntry {
+    name: String,
+    color_index: usize,
+    world_rect: egui::Rect,
 }
 
 impl SpaceViewApp {
@@ -82,18 +160,18 @@ impl SpaceViewApp {
             scanning: false,
             scan_progress: None,
             scan_receiver: None,
-            nav_stack: Vec::new(),
-            nav_generation: 0,
-            cached_rects: Vec::new(),
-            cache_nav_gen: u64::MAX,
-            cache_rect: egui::Rect::NOTHING,
-            cached_current_name: String::new(),
-            cached_current_size: 0,
-            cached_current_count: 0,
-            hovered_idx: None,
-            last_scroll_time: 0.0,
-            zoom_anim: None,
-            pending_zoom_out_index: None,
+            camera: Camera::new(egui::pos2(0.5, 0.5), 1.0),
+            world_layout: None,
+            last_viewport: egui::Rect::NOTHING,
+            hovered_node_info: None,
+            is_dragging: false,
+            depth_context: Vec::new(),
+            root_name: String::new(),
+            root_size: 0,
+            last_time: 0.0,
+            theme: ColorTheme::Rainbow,
+            hide_welcome: load_hide_welcome(),
+            show_about: false,
         }
     }
 
@@ -102,10 +180,11 @@ impl SpaceViewApp {
             prog.cancel.store(true, Ordering::Relaxed);
         }
         self.scan_root = None;
-        self.nav_stack.clear();
-        self.nav_generation = 0;
-        self.invalidate_cache();
+        self.world_layout = None;
+        self.camera = Camera::new(egui::pos2(0.5, 0.5), 1.0);
         self.scanning = true;
+        self.depth_context.clear();
+        self.hovered_node_info = None;
 
         let progress = Arc::new(ScanProgress::new());
         self.scan_progress = Some(progress.clone());
@@ -119,180 +198,65 @@ impl SpaceViewApp {
         });
     }
 
-    fn invalidate_cache(&mut self) {
-        self.cache_nav_gen = u64::MAX;
-        self.cached_rects.clear();
-        self.zoom_anim = None;
-        self.pending_zoom_out_index = None;
-    }
-
-    fn navigate_in(&mut self, sorted_index: usize) {
-        // Find the focus rect in the current (old) layout: the top-level folder we're zooming into
-        let focus = self.cached_rects.iter().find(|dr| {
-            dr.sorted_path.len() == 1 && dr.sorted_path[0] == sorted_index
-        }).map(|dr| dr.rect);
-
-        self.nav_stack.push(sorted_index);
-        self.nav_generation += 1;
-
-        // Start zoom-in animation if we found the rect
-        if let Some(focus_rect) = focus {
-            if !self.cache_rect.is_negative() {
-                self.zoom_anim = Some(ZoomAnim {
-                    start_time: -1.0, // will be set on first frame
-                    duration: ZOOM_ANIM_DURATION,
-                    focus_rect,
-                    viewport: self.cache_rect,
-                    zooming_in: true,
-                });
-            }
-        }
-    }
-
-    fn navigate_in_path(&mut self, path: &[usize]) {
-        // For click navigation that pushes multiple levels at once
-        // Find the deepest folder rect in current layout matching this path
-        let focus = self.cached_rects.iter().find(|dr| {
-            dr.sorted_path == path
-        }).map(|dr| dr.rect);
-
-        for &si in path {
-            self.nav_stack.push(si);
-        }
-        self.nav_generation += 1;
-
-        if let Some(focus_rect) = focus {
-            if !self.cache_rect.is_negative() {
-                self.zoom_anim = Some(ZoomAnim {
-                    start_time: -1.0,
-                    duration: ZOOM_ANIM_DURATION,
-                    focus_rect,
-                    viewport: self.cache_rect,
-                    zooming_in: true,
-                });
-            }
-        }
-    }
-
-    fn navigate_out(&mut self) {
-        if !self.nav_stack.is_empty() {
-            let popped_index = self.nav_stack.pop().unwrap();
-            self.nav_generation += 1;
-
-            // We'll determine the focus_rect after the new layout is computed
-            // Store the popped index temporarily in the animation
-            if !self.cache_rect.is_negative() {
-                self.zoom_anim = Some(ZoomAnim {
-                    start_time: -1.0,
-                    duration: ZOOM_ANIM_DURATION,
-                    // Placeholder — will be resolved in ensure_cache after layout recomputes
-                    focus_rect: egui::Rect::NOTHING,
-                    viewport: self.cache_rect,
-                    zooming_in: false,
-                });
-                // Store the index we need to find in the new layout
-                self.pending_zoom_out_index = Some(popped_index);
-            }
-        }
-    }
-
-    fn navigate_to_level(&mut self, level: usize) {
-        if level < self.nav_stack.len() {
-            // Cancel any animation — multi-level jump is instant
-            self.zoom_anim = None;
-            self.nav_stack.truncate(level);
-            self.nav_generation += 1;
-        }
-    }
-
-    fn ensure_cache(&mut self, available_rect: egui::Rect) {
-        let same_gen = self.cache_nav_gen == self.nav_generation;
-        let same_rect = (self.cache_rect.width() - available_rect.width()).abs() < 1.0
-            && (self.cache_rect.height() - available_rect.height()).abs() < 1.0;
-
-        if same_gen && same_rect {
-            return; // Cache is valid
-        }
-
-        // Cancel animation on window resize (size changed but not due to navigation)
-        if !same_rect && same_gen {
-            self.zoom_anim = None;
-            self.pending_zoom_out_index = None;
-        }
-
-        // Recompute layout
-        let new_rects = {
-            if let Some(ref root) = self.scan_root {
-                if let Some(node) = navigate_to(root, &self.nav_stack) {
-                    self.cached_current_name = node.name.clone();
-                    self.cached_current_size = node.size;
-                    self.cached_current_count = node.children.len();
-
-                    let mut rects = Vec::with_capacity(2048);
-                    compute_recursive_layout(
-                        node,
-                        available_rect,
-                        0,
-                        MAX_DEPTH,
-                        MIN_RECT_PX,
-                        &[],
-                        None,
-                        &mut rects,
-                    );
-                    Some(rects)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(rects) = new_rects {
-            self.cached_rects = rects;
-        } else {
-            self.cached_rects.clear();
-        }
-
-        self.cache_nav_gen = self.nav_generation;
-        self.cache_rect = available_rect;
-
-        // Resolve pending zoom-out animation: find the child rect in the new parent layout
-        if let Some(idx) = self.pending_zoom_out_index.take() {
-            if let Some(anim) = self.zoom_anim.as_mut() {
-                // Find the top-level rect in the NEW layout that matches the index we zoomed out from
-                if let Some(dr) = self.cached_rects.iter().find(|dr| {
-                    dr.sorted_path.len() == 1 && dr.sorted_path[0] == idx
-                }) {
-                    anim.focus_rect = dr.rect;
-                    anim.viewport = available_rect;
-                } else {
-                    // Couldn't find it — cancel animation
-                    self.zoom_anim = None;
-                }
-            }
-        }
-    }
-
-    fn breadcrumb_path(&self) -> Vec<String> {
-        let mut path = Vec::new();
+    fn build_layout(&mut self, viewport: egui::Rect) {
         if let Some(ref root) = self.scan_root {
-            path.push(root.name.clone());
-            let mut node = root;
-            for &idx in &self.nav_stack {
-                let sorted = node.sorted_children();
-                if let Some(child) = sorted.get(idx) {
-                    path.push(child.name.clone());
-                    node = child;
-                }
+            let aspect = viewport.height() / viewport.width();
+            let layout = WorldLayout::new(root, aspect);
+            self.camera.reset(layout.world_rect);
+            self.world_layout = Some(layout);
+            self.root_name = root.name.clone();
+            self.root_size = root.size;
+        }
+    }
+
+    fn rebuild_layout_preserving_camera(&mut self, viewport: egui::Rect) {
+        if let Some(ref root) = self.scan_root {
+            let old_aspect = self.world_layout.as_ref()
+                .map(|l| l.world_rect.height() / l.world_rect.width())
+                .unwrap_or(1.0);
+            let new_aspect = viewport.height() / viewport.width();
+
+            // Remap camera center.y proportionally
+            let y_ratio = if old_aspect > 0.0 {
+                new_aspect / old_aspect
+            } else {
+                1.0
+            };
+
+            let layout = WorldLayout::new(root, new_aspect);
+            self.world_layout = Some(layout);
+
+            // Scale the camera center Y proportionally
+            self.camera.center.y *= y_ratio;
+            self.camera.target_center.y *= y_ratio;
+        }
+    }
+
+    fn update_breadcrumbs(&mut self) {
+        self.depth_context.clear();
+        if let Some(ref layout) = self.world_layout {
+            let chain = layout.ancestor_chain(self.camera.center);
+            for (name, ci, wr) in chain {
+                self.depth_context.push(BreadcrumbEntry {
+                    name: name.to_string(),
+                    color_index: ci,
+                    world_rect: wr,
+                });
             }
         }
-        path
     }
 }
 
 impl eframe::App for SpaceViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = ctx.input(|i| i.time);
+        let dt = if self.last_time > 0.0 {
+            (now - self.last_time) as f32
+        } else {
+            1.0 / 60.0
+        };
+        self.last_time = now;
+
         // Check for scan completion
         if self.scanning {
             if let Some(ref rx) = self.scan_receiver {
@@ -300,10 +264,65 @@ impl eframe::App for SpaceViewApp {
                     self.scan_root = result;
                     self.scanning = false;
                     self.scan_receiver = None;
-                    self.nav_generation += 1;
                 }
             }
             ctx.request_repaint();
+        }
+
+        // ---- About popup ----
+        if self.show_about {
+            let mut open = true;
+            egui::Window::new("About SpaceView")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading(format!("SpaceView v{}", VERSION));
+                        ui.add_space(4.0);
+                        ui.label("Disk space visualizer");
+                        ui.label("By tront");
+                        ui.add_space(4.0);
+                        ui.label("Built with Rust + egui");
+                        ui.add_space(12.0);
+                    });
+
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.strong("Keyboard Shortcuts");
+                    ui.add_space(4.0);
+                    egui::Grid::new("about_shortcuts")
+                        .num_columns(2)
+                        .spacing([20.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Scroll");
+                            ui.label("Zoom in/out");
+                            ui.end_row();
+                            ui.label("Double-click");
+                            ui.label("Zoom into folder");
+                            ui.end_row();
+                            ui.label("Right-click");
+                            ui.label("Zoom out");
+                            ui.end_row();
+                            ui.label("Drag");
+                            ui.label("Pan view");
+                            ui.end_row();
+                            ui.label("Backspace / Esc");
+                            ui.label("Zoom out");
+                            ui.end_row();
+                        });
+
+                    ui.add_space(8.0);
+                    ui.vertical_centered(|ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_about = false;
+                        }
+                    });
+                });
+            if !open {
+                self.show_about = false;
+            }
         }
 
         // ---- Top panel ----
@@ -333,11 +352,25 @@ impl eframe::App for SpaceViewApp {
                     if let Some(ref prog) = self.scan_progress {
                         let files = prog.files_scanned.load(Ordering::Relaxed);
                         let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
-                        ui.label(format!(
+                        let elapsed = prog.scan_start.elapsed().as_secs_f64();
+                        let rate = if elapsed > 0.5 {
+                            files as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+                        let mut text = format!(
                             "Scanning... {} files, {}",
                             format_count(files),
-                            format_size(bytes)
-                        ));
+                            format_size(bytes),
+                        );
+                        if elapsed >= 1.0 {
+                            text += &format!(
+                                " — {} ({}/sec)",
+                                format_duration(elapsed),
+                                format_count(rate as u64),
+                            );
+                        }
+                        ui.label(text);
                     }
                     if ui.button("Cancel").clicked() {
                         if let Some(ref prog) = self.scan_progress {
@@ -345,29 +378,67 @@ impl eframe::App for SpaceViewApp {
                         }
                     }
                 }
+
+                // Theme selector
+                if !self.scanning {
+                    ui.separator();
+                    let current_label = self.theme.label();
+                    egui::ComboBox::from_id_salt("theme_selector")
+                        .selected_text(current_label)
+                        .show_ui(ui, |ui| {
+                            for &t in &THEMES {
+                                ui.selectable_value(&mut self.theme, t, t.label());
+                            }
+                        });
+                }
+
+                // Right-aligned About button
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("About").clicked() {
+                        self.show_about = !self.show_about;
+                    }
+                });
             });
 
-            // Breadcrumb
+            // Breadcrumb bar
             if self.scan_root.is_some() && !self.scanning {
                 ui.horizontal(|ui| {
-                    let crumbs = self.breadcrumb_path();
-                    for (i, crumb) in crumbs.iter().enumerate() {
-                        if i > 0 {
-                            ui.label(">");
-                        }
-                        if i < crumbs.len() - 1 {
-                            if ui.link(crumb).clicked() {
-                                self.navigate_to_level(i);
+                    // Root crumb
+                    if self.depth_context.is_empty() {
+                        ui.strong(&self.root_name);
+                    } else {
+                        let root_name = self.root_name.clone();
+                        if ui.link(&root_name).clicked() {
+                            if let Some(ref layout) = self.world_layout {
+                                let viewport = self.last_viewport;
+                                if !viewport.is_negative() {
+                                    self.camera.snap_to(layout.world_rect, viewport);
+                                }
                             }
-                        } else {
-                            ui.strong(crumb);
                         }
                     }
-                    if !self.nav_stack.is_empty() {
-                        ui.separator();
-                        if ui.button("Back").clicked() {
-                            self.navigate_out();
+
+                    // Depth context crumbs
+                    let crumbs = self.depth_context.clone();
+                    let last_idx = crumbs.len().saturating_sub(1);
+                    for (i, crumb) in crumbs.iter().enumerate() {
+                        ui.label(">");
+                        if i < last_idx {
+                            if ui.link(&crumb.name).clicked() {
+                                let viewport = self.last_viewport;
+                                if !viewport.is_negative() {
+                                    self.camera.snap_to(crumb.world_rect, viewport);
+                                }
+                            }
+                        } else {
+                            ui.strong(&crumb.name);
                         }
+                    }
+
+                    // Zoom level indicator
+                    if self.camera.zoom > 1.5 {
+                        ui.separator();
+                        ui.label(format!("{:.0}x", self.camera.zoom));
                     }
                 });
             }
@@ -378,28 +449,26 @@ impl eframe::App for SpaceViewApp {
             egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
-                        "Total: {} | {} items",
-                        format_size(self.cached_current_size),
-                        self.cached_current_count
+                        "{} — {}",
+                        self.root_name,
+                        format_size(self.root_size),
                     ));
 
-                    if let Some(idx) = self.hovered_idx {
-                        if let Some(dr) = self.cached_rects.get(idx) {
-                            ui.separator();
-                            let pct = if self.cached_current_size > 0 {
-                                (dr.size as f64 / self.cached_current_size as f64) * 100.0
-                            } else {
-                                0.0
-                            };
-                            let icon = if dr.is_dir { "D" } else { "F" };
-                            ui.label(format!(
-                                "[{}] {} - {} ({:.1}%)",
-                                icon,
-                                dr.name,
-                                format_size(dr.size),
-                                pct
-                            ));
-                        }
+                    if let Some(ref info) = self.hovered_node_info {
+                        ui.separator();
+                        let pct = if self.root_size > 0 {
+                            (info.size as f64 / self.root_size as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        let icon = if info.is_dir { "D" } else { "F" };
+                        ui.label(format!(
+                            "[{}] {} — {} ({:.1}%)",
+                            icon,
+                            info.name,
+                            format_size(info.size),
+                            pct
+                        ));
                     }
                 });
             });
@@ -408,18 +477,60 @@ impl eframe::App for SpaceViewApp {
         // ---- Central panel: treemap ----
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.scan_root.is_none() && !self.scanning {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() / 3.0);
-                    ui.heading("Welcome to SpaceView");
-                    ui.add_space(10.0);
-                    ui.label("Pick a drive or folder above to visualize disk usage.");
-                    ui.add_space(20.0);
-                    if ui.button("Open Folder...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.start_scan(path);
+                // Welcome screen
+                if self.hide_welcome {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 3.0);
+                        ui.label("Pick a drive or folder above to visualize disk usage.");
+                    });
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 5.0);
+                        ui.heading(format!("SpaceView v{}", VERSION));
+                        ui.add_space(6.0);
+                        ui.label("A disk space visualizer inspired by SpaceMonger.");
+                        ui.label("Select a drive or folder to see where your space goes.");
+                        ui.add_space(16.0);
+
+                        if ui.button("Open Folder...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                                self.start_scan(path);
+                            }
                         }
-                    }
-                });
+
+                        ui.add_space(20.0);
+                        ui.strong("Keyboard Shortcuts");
+                        ui.add_space(6.0);
+
+                        egui::Grid::new("welcome_shortcuts")
+                            .num_columns(2)
+                            .spacing([20.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label("Scroll");
+                                ui.label("Zoom in/out");
+                                ui.end_row();
+                                ui.label("Double-click");
+                                ui.label("Zoom into folder");
+                                ui.end_row();
+                                ui.label("Right-click");
+                                ui.label("Zoom out");
+                                ui.end_row();
+                                ui.label("Drag");
+                                ui.label("Pan view");
+                                ui.end_row();
+                                ui.label("Backspace / Esc");
+                                ui.label("Zoom out");
+                                ui.end_row();
+                            });
+
+                        ui.add_space(16.0);
+                        let mut hide = self.hide_welcome;
+                        if ui.checkbox(&mut hide, "Don't show this again").changed() {
+                            self.hide_welcome = hide;
+                            save_hide_welcome(hide);
+                        }
+                    });
+                }
                 return;
             }
 
@@ -430,470 +541,458 @@ impl eframe::App for SpaceViewApp {
                     if let Some(ref prog) = self.scan_progress {
                         let files = prog.files_scanned.load(Ordering::Relaxed);
                         let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
+                        let elapsed = prog.scan_start.elapsed().as_secs_f64();
                         ui.label(format!("{} files found", format_count(files)));
                         ui.label(format!("{} total", format_size(bytes)));
+                        if elapsed >= 1.0 {
+                            let rate = files as f64 / elapsed;
+                            ui.label(format!(
+                                "{} elapsed ({}/sec)",
+                                format_duration(elapsed),
+                                format_count(rate as u64),
+                            ));
+                        }
                     }
                     ui.spinner();
                 });
                 return;
             }
 
-            let rect = ui.available_rect_before_wrap();
+            let viewport = ui.available_rect_before_wrap();
+            self.last_viewport = viewport;
 
-            // Ensure cache is up to date (only recomputes if nav or size changed)
-            self.ensure_cache(rect);
+            // Build layout on first frame after scan (or on resize)
+            if self.world_layout.is_none() {
+                self.build_layout(viewport);
+            }
 
-            if self.cached_rects.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() / 3.0);
-                    ui.label("This folder is empty.");
-                });
+            // Handle viewport resize: rebuild layout with new aspect, preserving camera
+            if let Some(ref layout) = self.world_layout {
+                let current_aspect = viewport.height() / viewport.width();
+                let layout_aspect = layout.world_rect.height() / layout.world_rect.width();
+                if (current_aspect - layout_aspect).abs() > 0.01 {
+                    self.rebuild_layout_preserving_camera(viewport);
+                }
+            }
+
+            let has_layout = self.world_layout.is_some();
+            if !has_layout {
                 return;
             }
 
-            let painter = ui.painter_at(rect);
+            // 1. Advance camera animation
+            let camera_moving = self.camera.tick(dt);
 
-            // --- Compute zoom animation transform ---
-            let now = ctx.input(|i| i.time);
-            let animating = self.zoom_anim.is_some();
-            let mut anim_done = false;
+            // 2. Handle input
+            let response = ui.allocate_rect(viewport, egui::Sense::click_and_drag());
 
-            // Compute scale and offset for the current animation frame
-            // (scale=1.0, offset=zero when no animation)
-            let (scale, offset) = if let Some(ref mut anim) = self.zoom_anim {
-                // Initialize start_time on first frame
-                if anim.start_time < 0.0 {
-                    anim.start_time = now;
+            // Mouse position
+            let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+            let mouse_in_viewport = mouse_pos.map(|p| viewport.contains(p)).unwrap_or(false);
+
+            // Scroll zoom
+            let scroll_y = ctx.input(|i| i.raw_scroll_delta.y);
+            if mouse_in_viewport && scroll_y.abs() > 0.1 {
+                if let Some(pos) = mouse_pos {
+                    let world_focus = self.camera.screen_to_world(pos, viewport);
+                    self.camera.scroll_zoom(scroll_y / 120.0, world_focus);
                 }
-                // Skip animation if focus_rect is invalid
-                if anim.focus_rect.is_negative() || anim.focus_rect.width() < 1.0 || anim.focus_rect.height() < 1.0 {
-                    anim_done = true;
-                    (1.0f32, egui::Vec2::ZERO)
-                } else {
-                    let elapsed = now - anim.start_time;
-                    let raw_t = (elapsed / anim.duration).min(1.0) as f32;
-                    let t = ease_out_cubic(raw_t as f64) as f32;
-
-                    if raw_t >= 1.0 {
-                        anim_done = true;
-                        (1.0f32, egui::Vec2::ZERO)
-                    } else {
-                        let vp = anim.viewport;
-                        let fr = anim.focus_rect;
-
-                        // Transform maps layout coordinates → screen coordinates:
-                        //   screen_pos = layout_pos * scale + offset
-                        // At t=1 (end): identity → scale=1, offset=0
-                        // At t=0 (start): depends on direction
-
-                        if anim.zooming_in {
-                            // Zoom IN: new layout fills viewport. We want it to
-                            // START appearing at focus_rect's old position (small)
-                            // and EXPAND to fill the viewport.
-                            //
-                            // At t=0: viewport → focus_rect
-                            //   fr.min = vp.min * s0 + off0
-                            //   s0 = fr.width / vp.width  (< 1, shrink)
-                            //   off0 = fr.min - vp.min * s0
-                            let s0 = (fr.width() / vp.width())
-                                .min(fr.height() / vp.height());
-                            let off0 = egui::vec2(
-                                fr.min.x - vp.min.x * s0,
-                                fr.min.y - vp.min.y * s0,
-                            );
-                            let s = s0 + (1.0 - s0) * t; // lerp s0 → 1.0
-                            let off = egui::vec2(
-                                off0.x * (1.0 - t), // lerp off0 → 0
-                                off0.y * (1.0 - t),
-                            );
-                            (s, off)
-                        } else {
-                            // Zoom OUT: new layout is the parent. We want it to
-                            // START zoomed into focus_rect (where the child sits)
-                            // and PULL BACK to show the full parent.
-                            //
-                            // At t=0: focus_rect fills viewport
-                            //   vp.min = fr.min * s0 + off0
-                            //   s0 = vp.width / fr.width  (> 1, magnify)
-                            //   off0 = vp.min - fr.min * s0
-                            let s0 = (vp.width() / fr.width())
-                                .min(vp.height() / fr.height());
-                            let off0 = egui::vec2(
-                                vp.min.x - fr.min.x * s0,
-                                vp.min.y - fr.min.y * s0,
-                            );
-                            let s = s0 + (1.0 - s0) * t; // lerp s0 → 1.0
-                            let off = egui::vec2(
-                                off0.x * (1.0 - t), // lerp off0 → 0
-                                off0.y * (1.0 - t),
-                            );
-                            (s, off)
-                        }
-                    }
-                }
-            } else {
-                (1.0f32, egui::Vec2::ZERO)
-            };
-
-            if anim_done {
-                self.zoom_anim = None;
             }
 
-            if animating && !anim_done {
+            // Drag pan
+            if response.dragged_by(egui::PointerButton::Primary) {
+                self.is_dragging = true;
+                let delta = response.drag_delta();
+                // Convert screen delta to world delta
+                let scale = self.camera.zoom * viewport.width();
+                let world_delta = egui::vec2(delta.x / scale, delta.y / scale);
+                self.camera.drag_pan(world_delta);
+            }
+
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                self.is_dragging = false;
+            }
+
+            // Double-click: snap zoom into hovered directory
+            if response.double_clicked() && !self.is_dragging {
+                if let Some(ref info) = self.hovered_node_info {
+                    if info.is_dir && info.has_children {
+                        self.camera.snap_to(info.world_rect, viewport);
+                    }
+                }
+            }
+
+            // Right-click or Backspace/Escape: zoom out
+            let zoom_out = ctx.input(|i| i.pointer.secondary_clicked())
+                || ctx.input(|i| i.key_pressed(egui::Key::Backspace))
+                || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
+            if zoom_out {
+                // Zoom out: snap to parent of current center, or to root
+                if !self.depth_context.is_empty() {
+                    // If we have 2+ breadcrumbs, go to second-to-last; otherwise root
+                    if self.depth_context.len() >= 2 {
+                        let parent = &self.depth_context[self.depth_context.len() - 2];
+                        self.camera.snap_to(parent.world_rect, viewport);
+                    } else if let Some(ref layout) = self.world_layout {
+                        self.camera.snap_to(layout.world_rect, viewport);
+                    }
+                } else if let Some(ref layout) = self.world_layout {
+                    self.camera.snap_to(layout.world_rect, viewport);
+                }
+            }
+
+            // 3. Lazy expand visible detail
+            if let (Some(ref mut layout), Some(ref root)) =
+                (&mut self.world_layout, &self.scan_root)
+            {
+                layout.expand_visible(root, &self.camera, viewport);
+                layout.maybe_prune(&self.camera, viewport);
+            }
+
+            // 4. Render
+            let painter = ui.painter_at(viewport);
+            let theme = self.theme;
+
+            // Walk the layout tree and draw visible nodes
+            if let Some(ref layout) = self.world_layout {
+                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme);
+            }
+
+            // 5. Hit test for hover (screen-space, skip while dragging)
+            if !self.is_dragging {
+                if let Some(pos) = mouse_pos {
+                    if mouse_in_viewport {
+                        if let Some(ref layout) = self.world_layout {
+                            if let Some(hit) = screen_hit_test(&layout.root_nodes, &self.camera, viewport, pos) {
+                                // Draw hover highlight using the screen_rect from hit test
+                                if hit.screen_rect.intersects(viewport) {
+                                    painter.rect_stroke(
+                                        hit.screen_rect.shrink(0.5),
+                                        1.0,
+                                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
+                                self.hovered_node_info = Some(hit);
+                            } else {
+                                self.hovered_node_info = None;
+                            }
+                        }
+                    } else {
+                        self.hovered_node_info = None;
+                    }
+                } else {
+                    self.hovered_node_info = None;
+                }
+            }
+
+            // 6. Update breadcrumbs from camera center
+            self.update_breadcrumbs();
+
+            // 7. Draw zoom frame borders (when zoomed in)
+            if !self.depth_context.is_empty() && self.camera.zoom > 1.2 {
+                // Use the color of the deepest breadcrumb
+                let last = &self.depth_context[self.depth_context.len() - 1];
+                let ci = last.color_index;
+                let (r, g, b) = theme.base_rgb(ci);
+                let frame_col = egui::Color32::from_rgb(
+                    (r as f32 * 0.7) as u8,
+                    (g as f32 * 0.7) as u8,
+                    (b as f32 * 0.7) as u8,
+                );
+                let w = ZOOM_FRAME_WIDTH;
+                let fr = viewport;
+                // Top
+                painter.rect_filled(
+                    egui::Rect::from_min_max(fr.min, egui::pos2(fr.max.x, fr.min.y + w)),
+                    0.0, frame_col,
+                );
+                // Bottom
+                painter.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(fr.min.x, fr.max.y - w), fr.max),
+                    0.0, frame_col,
+                );
+                // Left
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(fr.min.x, fr.min.y + w),
+                        egui::pos2(fr.min.x + w, fr.max.y - w),
+                    ),
+                    0.0, frame_col,
+                );
+                // Right
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(fr.max.x - w, fr.min.y + w),
+                        egui::pos2(fr.max.x, fr.max.y - w),
+                    ),
+                    0.0, frame_col,
+                );
+            }
+
+            // 8. Request repaint if camera is moving
+            if camera_moving {
                 ctx.request_repaint();
             }
-
-            // Helper: transform a rect by scale+offset, clamped to viewport
-            let transform_rect = |r: egui::Rect| -> egui::Rect {
-                if scale == 1.0 && offset == egui::Vec2::ZERO {
-                    return r;
-                }
-                let min = egui::pos2(
-                    r.min.x * scale + offset.x,
-                    r.min.y * scale + offset.y,
-                );
-                let max = egui::pos2(
-                    r.max.x * scale + offset.x,
-                    r.max.y * scale + offset.y,
-                );
-                egui::Rect::from_min_max(min, max)
-            };
-
-            // --- Hit test: find deepest rect under mouse ---
-            // During animation, disable hover to avoid flickering
-            let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
-            let mut new_hovered: Option<usize> = None;
-            if !animating || anim_done {
-                if let Some(pos) = mouse_pos {
-                    if rect.contains(pos) {
-                        for (i, dr) in self.cached_rects.iter().enumerate() {
-                            if dr.rect.contains(pos) {
-                                new_hovered = Some(i);
-                            }
-                        }
-                    }
-                }
-            }
-            self.hovered_idx = new_hovered;
-
-            // --- Draw all cached rects (with transform applied) ---
-            for (i, dr) in self.cached_rects.iter().enumerate() {
-                let draw_rect = transform_rect(dr.rect);
-
-                // Skip rects that are too small or outside viewport
-                if draw_rect.width() < 1.0 || draw_rect.height() < 1.0 {
-                    continue;
-                }
-                if !draw_rect.intersects(rect) {
-                    continue;
-                }
-
-                let is_hovered = self.hovered_idx == Some(i);
-
-                if dr.is_dir && dr.has_children {
-                    // FOLDER: draw header bar + dark body
-                    let hh = header_height(dr.depth) * scale;
-                    let inner = draw_rect.shrink(0.5);
-
-                    // Body (dark background — children will draw on top)
-                    let body_col = body_color(dr.color_index, dr.depth);
-                    painter.rect_filled(inner, 1.0, body_col);
-
-                    // Header bar
-                    if inner.height() > hh + 4.0 {
-                        let header = egui::Rect::from_min_size(
-                            inner.min,
-                            egui::vec2(inner.width(), hh),
-                        );
-                        let hdr_col = header_color(dr.color_index, dr.depth, is_hovered);
-                        painter.rect_filled(header, 1.0, hdr_col);
-
-                        // Label in header
-                        if inner.width() > 30.0 && hh > 10.0 {
-                            let font_size = (hh - 4.0).clamp(9.0, 13.0);
-                            let max_chars = ((inner.width() - 8.0) / (font_size * 0.55)) as usize;
-                            let label = truncate_str(&dr.name, max_chars);
-                            painter.text(
-                                header.min + egui::vec2(3.0, 1.0),
-                                egui::Align2::LEFT_TOP,
-                                label,
-                                egui::FontId::proportional(font_size),
-                                egui::Color32::WHITE,
-                            );
-                            // Size in header if room
-                            if inner.width() > 100.0 {
-                                painter.text(
-                                    egui::pos2(header.max.x - 3.0, header.min.y + 1.0),
-                                    egui::Align2::RIGHT_TOP,
-                                    format_size(dr.size),
-                                    egui::FontId::proportional(font_size - 1.0),
-                                    egui::Color32::from_white_alpha(180),
-                                );
-                            }
-                        }
-                    } else {
-                        // Too small for header, just fill with color
-                        let col = dir_color(dr.color_index, dr.depth, is_hovered);
-                        painter.rect_filled(inner, 1.0, col);
-                    }
-                } else {
-                    // FILE or leaf folder: solid color fill
-                    let inner = draw_rect.shrink(0.5);
-                    let col = if dr.is_dir {
-                        dir_color(dr.color_index, dr.depth, is_hovered)
-                    } else {
-                        file_color(dr.color_index, dr.depth, is_hovered)
-                    };
-                    painter.rect_filled(inner, 1.0, col);
-
-                    // Labels
-                    if inner.width() > 35.0 && inner.height() > 14.0 {
-                        let text_col = text_color_for(col);
-                        let font_size = 11.0f32.min(inner.height() - 3.0);
-                        let max_chars =
-                            ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
-                        let label = truncate_str(&dr.name, max_chars);
-
-                        painter.text(
-                            inner.min + egui::vec2(3.0, 2.0),
-                            egui::Align2::LEFT_TOP,
-                            label,
-                            egui::FontId::proportional(font_size),
-                            text_col,
-                        );
-
-                        if inner.height() > 28.0 {
-                            painter.text(
-                                inner.min + egui::vec2(3.0, font_size + 3.0),
-                                egui::Align2::LEFT_TOP,
-                                format_size(dr.size),
-                                egui::FontId::proportional(9.0),
-                                text_col.gamma_multiply(0.6),
-                            );
-                        }
-                    }
-                }
-            }
-
-            // --- Input handling ---
-            // Block input during animation
-            let input_blocked = animating && !anim_done;
-
-            // Mouse wheel zoom (with cooldown to prevent hyper-zooming)
-            let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
-            let scroll_ready = (now - self.last_scroll_time) > SCROLL_COOLDOWN_SECS;
-
-            if !input_blocked && scroll_ready && scroll_y > SCROLL_THRESHOLD {
-                // Scroll up → zoom IN to hovered folder
-                if let Some(idx) = self.hovered_idx {
-                    let dr = &self.cached_rects[idx];
-                    if !dr.sorted_path.is_empty() {
-                        let top_idx = dr.sorted_path[0];
-                        let is_navigable = self.cached_rects.iter().any(|r| {
-                            r.sorted_path.len() == 1
-                                && r.sorted_path[0] == top_idx
-                                && r.has_children
-                        });
-                        if is_navigable {
-                            self.navigate_in(top_idx);
-                            self.last_scroll_time = now;
-                        }
-                    }
-                }
-            } else if !input_blocked && scroll_ready && scroll_y < -SCROLL_THRESHOLD {
-                // Scroll down → zoom OUT
-                self.navigate_out();
-                self.last_scroll_time = now;
-            }
-
-            // Left click → zoom into clicked folder
-            if !input_blocked && ctx.input(|i| i.pointer.primary_clicked()) {
-                if let Some(idx) = self.hovered_idx {
-                    let dr = &self.cached_rects[idx].clone();
-                    if dr.has_children {
-                        // Navigate directly to this folder
-                        let path = dr.sorted_path.clone();
-                        self.navigate_in_path(&path);
-                    } else if dr.is_dir {
-                        // Empty dir, no-op
-                    } else if dr.sorted_path.len() > 1 {
-                        // File: navigate to its parent folder
-                        let parent_path = dr.sorted_path[..dr.sorted_path.len() - 1].to_vec();
-                        self.navigate_in_path(&parent_path);
-                    }
-                }
-            }
-
-            // Right click → back
-            if !input_blocked && ctx.input(|i| i.pointer.secondary_clicked()) {
-                self.navigate_out();
-            }
-
-            // Keyboard: Backspace/Escape → back
-            if !input_blocked
-                && (ctx.input(|i| i.key_pressed(egui::Key::Backspace))
-                    || ctx.input(|i| i.key_pressed(egui::Key::Escape)))
-            {
-                self.navigate_out();
-            }
-
-            ui.allocate_rect(rect, egui::Sense::click_and_drag());
         });
     }
 }
 
-// ===================== Layout computation =====================
+// ===================== Rendering =====================
+//
+// Screen-space rendering pipeline (v0.5.0):
+//   Children are positioned at render time via treemap::layout in screen pixels.
+//   Fixed 16px headers, 2px padding, 1px border — no proportional world-space mismatch.
+//   For directories with children: body fill → recurse children → header on top
+//   For files/empty dirs: single-pass fill + clipped text
+//
+// Headers are drawn AFTER children so they're never obscured.
+// All text is clipped to its containing rect via painter.with_clip_rect().
 
-fn navigate_to<'a>(root: &'a FileNode, nav_stack: &[usize]) -> Option<&'a FileNode> {
-    let mut node = root;
-    for &idx in nav_stack {
-        let sorted = node.sorted_children();
-        node = sorted.get(idx).copied()?;
-    }
-    Some(node)
-}
-
-fn compute_recursive_layout(
-    node: &FileNode,
-    bounds: egui::Rect,
-    depth: usize,
-    max_depth: usize,
-    min_size: f32,
-    parent_path: &[usize],
-    color_override: Option<usize>,
-    result: &mut Vec<DrawRect>,
+/// Top-level entry: transform root nodes from world to screen, then recurse.
+fn render_nodes(
+    painter: &egui::Painter,
+    nodes: &[LayoutNode],
+    camera: &Camera,
+    viewport: egui::Rect,
+    theme: ColorTheme,
 ) {
-    if result.len() >= MAX_DRAW_RECTS {
+    for node in nodes {
+        let screen_rect = camera.world_to_screen(node.world_rect, viewport);
+        render_node(painter, node, screen_rect, viewport, theme);
+    }
+}
+
+/// Core recursive render. `screen_rect` is the allocated screen area for this node
+/// (computed by the parent via treemap::layout, NOT from world_rect for children).
+fn render_node(
+    painter: &egui::Painter,
+    node: &LayoutNode,
+    screen_rect: egui::Rect,
+    viewport: egui::Rect,
+    theme: ColorTheme,
+) {
+    // Viewport culling
+    if !screen_rect.intersects(viewport) {
+        return;
+    }
+    // Size culling
+    if screen_rect.width() < MIN_SCREEN_PX || screen_rect.height() < MIN_SCREEN_PX {
         return;
     }
 
-    let sorted = node.sorted_children();
-    if sorted.is_empty() {
-        return;
-    }
+    if node.is_dir && node.has_children {
+        let inner = screen_rect.shrink(BORDER_PX);
+        let hh = HEADER_PX.min(inner.height());
 
-    let sizes: Vec<f64> = sorted.iter().map(|c| c.size as f64).collect();
-    let layout_rects =
-        treemap::layout(bounds.min.x, bounds.min.y, bounds.width(), bounds.height(), &sizes);
+        // Phase 1: body fill
+        let col = body_color(node.color_index, theme);
+        painter.rect_filled(inner, 1.0, col);
 
-    for tr in &layout_rects {
-        if result.len() >= MAX_DRAW_RECTS {
-            break;
+        // Phase 2: children in screen-space content area
+        if node.children_expanded && !node.children.is_empty() {
+            let content = egui::Rect::from_min_max(
+                egui::pos2(inner.min.x + PAD_PX, inner.min.y + hh),
+                egui::pos2(inner.max.x - PAD_PX, inner.max.y - PAD_PX),
+            );
+            if content.width() > MIN_SCREEN_PX && content.height() > MIN_SCREEN_PX {
+                let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
+                let rects = treemap::layout(
+                    content.min.x,
+                    content.min.y,
+                    content.width(),
+                    content.height(),
+                    &sizes,
+                );
+                for tr in &rects {
+                    let child_rect = egui::Rect::from_min_size(
+                        egui::pos2(tr.x, tr.y),
+                        egui::vec2(tr.w, tr.h),
+                    );
+                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme);
+                }
+            }
         }
 
-        let child = sorted[tr.index];
-        let r = egui::Rect::from_min_size(egui::pos2(tr.x, tr.y), egui::vec2(tr.w, tr.h));
+        // Phase 3: header ON TOP of children
+        if inner.height() >= 12.0 && inner.width() >= 8.0 {
+            let header = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), hh));
+            let clipped = header.intersect(viewport);
+            if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                let hdr_col = header_color(node.color_index, theme);
+                painter.rect_filled(clipped, 1.0, hdr_col);
 
-        if r.width() < min_size || r.height() < min_size {
-            continue;
+                if hh >= 14.0 && inner.width() > 30.0 {
+                    let text_painter = painter.with_clip_rect(clipped);
+                    let font_size = (hh - 4.0).clamp(9.0, 13.0);
+                    let size_text = format_size(node.size);
+                    let show_size = inner.width() > 100.0;
+                    let size_reserve = if show_size {
+                        size_text.len() as f32 * (font_size - 1.0) * 0.55 + 12.0
+                    } else {
+                        0.0
+                    };
+                    let name_width = inner.width() - 8.0 - size_reserve;
+                    let max_chars = (name_width / (font_size * 0.55)).max(0.0) as usize;
+                    let label = truncate_str(&node.name, max_chars);
+                    text_painter.text(
+                        clipped.min + egui::vec2(3.0, 1.0),
+                        egui::Align2::LEFT_TOP,
+                        label,
+                        egui::FontId::proportional(font_size),
+                        egui::Color32::WHITE,
+                    );
+                    if show_size {
+                        text_painter.text(
+                            egui::pos2(clipped.max.x - 3.0, clipped.min.y + 1.0),
+                            egui::Align2::RIGHT_TOP,
+                            size_text,
+                            egui::FontId::proportional(font_size - 1.0),
+                            egui::Color32::from_white_alpha(180),
+                        );
+                    }
+                }
+            }
         }
+    } else {
+        // Files / empty dirs: single pass
+        let inner = screen_rect.shrink(0.5);
+        let col = if node.is_dir {
+            dir_color(node.color_index, theme)
+        } else {
+            file_color(node.color_index, theme)
+        };
+        painter.rect_filled(inner, 1.0, col);
 
-        let mut path = Vec::with_capacity(parent_path.len() + 1);
-        path.extend_from_slice(parent_path);
-        path.push(tr.index);
+        if inner.width() > 35.0 && inner.height() > 14.0 {
+            let text_clip = inner.intersect(viewport);
+            if text_clip.width() > 0.0 && text_clip.height() > 0.0 {
+                let text_painter = painter.with_clip_rect(text_clip);
+                let text_col = text_color_for(col);
+                let font_size = 11.0f32.min(inner.height() - 3.0);
+                let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
+                let label = truncate_str(&node.name, max_chars);
 
-        let ci = color_override.unwrap_or(tr.index);
-        let has_children = child.is_dir && !child.children.is_empty();
-
-        result.push(DrawRect {
-            rect: r,
-            depth,
-            name: child.name.clone(),
-            size: child.size,
-            is_dir: child.is_dir,
-            has_children,
-            sorted_path: path.clone(),
-            color_index: ci,
-        });
-
-        // Recurse into directories
-        if has_children && depth < max_depth {
-            let hh = header_height(depth);
-            let pad = 1.0;
-            if r.height() > hh + 16.0 && r.width() > 24.0 {
-                let inner = egui::Rect::from_min_max(
-                    egui::pos2(r.min.x + pad, r.min.y + hh),
-                    egui::pos2(r.max.x - pad, r.max.y - pad),
+                text_painter.text(
+                    inner.min + egui::vec2(3.0, 2.0),
+                    egui::Align2::LEFT_TOP,
+                    label,
+                    egui::FontId::proportional(font_size),
+                    text_col,
                 );
-                compute_recursive_layout(
-                    child, inner, depth + 1, max_depth, min_size, &path, Some(ci), result,
-                );
+
+                if inner.height() > 28.0 {
+                    text_painter.text(
+                        inner.min + egui::vec2(3.0, font_size + 3.0),
+                        egui::Align2::LEFT_TOP,
+                        format_size(node.size),
+                        egui::FontId::proportional(9.0),
+                        text_col.gamma_multiply(0.6),
+                    );
+                }
             }
         }
     }
 }
 
-fn header_height(depth: usize) -> f32 {
-    match depth {
-        0 => 20.0,
-        1 => 16.0,
-        2 => 14.0,
-        3 => 12.0,
-        _ => 2.0,
+// ===================== Screen-Space Hit Testing =====================
+
+/// Hit test by traversing the layout tree and computing screen rects
+/// the same way rendering does (via treemap::layout at each level).
+fn screen_hit_test(
+    nodes: &[LayoutNode],
+    camera: &Camera,
+    viewport: egui::Rect,
+    screen_pos: egui::Pos2,
+) -> Option<HoveredInfo> {
+    for node in nodes {
+        let screen_rect = camera.world_to_screen(node.world_rect, viewport);
+        if let Some(hit) = hit_test_node(node, screen_rect, viewport, screen_pos) {
+            return Some(hit);
+        }
     }
+    None
+}
+
+/// Recursive screen-space hit test for a single node.
+fn hit_test_node(
+    node: &LayoutNode,
+    screen_rect: egui::Rect,
+    viewport: egui::Rect,
+    pos: egui::Pos2,
+) -> Option<HoveredInfo> {
+    if !screen_rect.contains(pos) {
+        return None;
+    }
+    if screen_rect.width() < MIN_SCREEN_PX || screen_rect.height() < MIN_SCREEN_PX {
+        return None;
+    }
+
+    // Check children first (deeper = more specific)
+    if node.is_dir && node.has_children && node.children_expanded && !node.children.is_empty() {
+        let inner = screen_rect.shrink(BORDER_PX);
+        let hh = HEADER_PX.min(inner.height());
+        let content = egui::Rect::from_min_max(
+            egui::pos2(inner.min.x + PAD_PX, inner.min.y + hh),
+            egui::pos2(inner.max.x - PAD_PX, inner.max.y - PAD_PX),
+        );
+        if content.width() > MIN_SCREEN_PX && content.height() > MIN_SCREEN_PX && content.contains(pos) {
+            let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
+            let rects = treemap::layout(
+                content.min.x,
+                content.min.y,
+                content.width(),
+                content.height(),
+                &sizes,
+            );
+            for tr in &rects {
+                let child_rect = egui::Rect::from_min_size(
+                    egui::pos2(tr.x, tr.y),
+                    egui::vec2(tr.w, tr.h),
+                );
+                if let Some(deeper) = hit_test_node(&node.children[tr.index], child_rect, viewport, pos) {
+                    return Some(deeper);
+                }
+            }
+        }
+    }
+
+    Some(HoveredInfo {
+        name: node.name.clone(),
+        size: node.size,
+        is_dir: node.is_dir,
+        world_rect: node.world_rect,
+        has_children: node.has_children,
+        screen_rect,
+    })
 }
 
 // ===================== Colors =====================
 
-const PALETTE: [(u8, u8, u8); 8] = [
-    (66, 133, 244),  // blue
-    (52, 168, 83),   // green
-    (251, 188, 4),   // yellow
-    (234, 67, 53),   // red
-    (171, 71, 188),  // purple
-    (0, 172, 193),   // teal
-    (255, 112, 67),  // orange
-    (63, 81, 181),   // indigo
-];
-
-fn darken(c: u8, depth: usize) -> u8 {
-    let factor = 1.0 - (depth as f32 * 0.12).min(0.45);
-    (c as f32 * factor) as u8
+fn dir_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
+    let (r, g, b) = theme.base_rgb(ci);
+    egui::Color32::from_rgb(r, g, b)
 }
 
-fn dir_color(ci: usize, depth: usize, hovered: bool) -> egui::Color32 {
-    let (r, g, b) = PALETTE[ci % PALETTE.len()];
-    let (r, g, b) = (darken(r, depth), darken(g, depth), darken(b, depth));
-    if hovered {
-        egui::Color32::from_rgb(r.saturating_add(35), g.saturating_add(35), b.saturating_add(35))
-    } else {
-        egui::Color32::from_rgb(r, g, b)
-    }
-}
-
-fn file_color(ci: usize, depth: usize, hovered: bool) -> egui::Color32 {
-    let (r, g, b) = PALETTE[ci % PALETTE.len()];
-    // Files are lighter than folders
+fn file_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
+    let (r, g, b) = theme.base_rgb(ci);
     let lighten = |c: u8| c.saturating_add(50).min(230);
-    let (r, g, b) = (
-        lighten(darken(r, depth)),
-        lighten(darken(g, depth)),
-        lighten(darken(b, depth)),
-    );
-    if hovered {
-        egui::Color32::from_rgb(r.saturating_add(25), g.saturating_add(25), b.saturating_add(25))
-    } else {
-        egui::Color32::from_rgb(r, g, b)
-    }
+    egui::Color32::from_rgb(lighten(r), lighten(g), lighten(b))
 }
 
-fn header_color(ci: usize, depth: usize, hovered: bool) -> egui::Color32 {
-    let (r, g, b) = PALETTE[ci % PALETTE.len()];
-    // Headers are slightly darker/more saturated than body
-    let dim = |c: u8| darken(c, depth).saturating_sub(15);
-    let (r, g, b) = (dim(r), dim(g), dim(b));
-    if hovered {
-        egui::Color32::from_rgb(r.saturating_add(40), g.saturating_add(40), b.saturating_add(40))
-    } else {
-        egui::Color32::from_rgb(r, g, b)
-    }
+fn header_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
+    let (r, g, b) = theme.base_rgb(ci);
+    egui::Color32::from_rgb(r.saturating_sub(15), g.saturating_sub(15), b.saturating_sub(15))
 }
 
-fn body_color(ci: usize, depth: usize) -> egui::Color32 {
-    let (r, g, b) = PALETTE[ci % PALETTE.len()];
-    // Very dark version — children draw on top, gaps reveal this
-    let d = |c: u8| (darken(c, depth) as f32 * 0.18) as u8;
-    egui::Color32::from_rgb(d(r), d(g), d(b))
+fn body_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
+    let (r, g, b) = theme.base_rgb(ci);
+    egui::Color32::from_rgb(
+        (r as f32 * 0.18) as u8,
+        (g as f32 * 0.18) as u8,
+        (b as f32 * 0.18) as u8,
+    )
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
@@ -944,5 +1043,16 @@ fn format_count(n: u64) -> String {
         format!("{:.1}K", n as f64 / 1_000.0)
     } else {
         format!("{}", n)
+    }
+}
+
+fn format_duration(secs: f64) -> String {
+    let s = secs as u64;
+    if s >= 3600 {
+        format!("{}h {}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m {}s", s / 60, s % 60)
+    } else {
+        format!("{}s", s)
     }
 }

@@ -1,6 +1,6 @@
 # SpaceView
 
-SpaceMonger-inspired disk space visualizer built with Rust + egui.
+SpaceMonger-inspired disk space visualizer built with Rust + egui. By tront.
 
 ## Tech Stack
 - **Language:** Rust (edition 2021)
@@ -15,26 +15,35 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture
+## Architecture (v0.5)
 
 ### Source Files
 - `src/main.rs` — Entry point, creates eframe window (1024x700)
-- `src/app.rs` — Main UI: SpaceViewApp struct, treemap rendering, navigation, input handling, zoom animation
-- `src/scanner.rs` — Recursive directory scanner with progress tracking and cancellation
+- `src/app.rs` — Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens
+- `src/camera.rs` — Continuous Camera: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations
+- `src/scanner.rs` — Recursive directory scanner with progress tracking, elapsed time, scan rate, and cancellation
+- `src/world_layout.rs` — LayoutNode tree in world-space. Lazy expand_visible, prune, ancestor_chain (world_rects used for camera/expand/prune only)
 - `src/treemap.rs` — Squarified treemap layout algorithm (Bruls, Huizing, van Wijk)
 
 ### Key Design Decisions
-- **Cached layout:** DrawRect cache only recomputes on navigation change or window resize (nav_generation tracking)
-- **Max limits:** MAX_DRAW_RECTS=6000, MAX_DEPTH=5, MIN_RECT_PX=3.0 for performance
-- **Color system:** 8-color palette with depth-based darkening, folders get headers, files get lighter fills
-- **Smooth zoom:** Camera transform animation (scale+offset) with ease-out-cubic easing over 250ms
-- **Scroll cooldown:** 0.25s cooldown prevents hyper-zoom on fast scroll wheels
+- **Screen-space child layout:** Children positioned at render time via `treemap::layout` in screen pixels. Fixed 16px headers, 2px padding, 1px border — no proportional world-space mismatch (SpaceMonger-style)
+- **Two-phase rendering:** Directories render as body→children→header (headers drawn ON TOP of children, never obscured)
+- **Screen-space hit testing:** Hit test mirrors render traversal — runs `treemap::layout` at each level to compute exact screen rects
+- **Text clipping:** All text uses `painter.with_clip_rect()` to prevent spilling beyond rect boundaries
+- **Continuous camera:** No nav_stack — replaced by Camera with center+zoom. Smooth scroll-zoom, drag pan, snap-to animations
+- **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering
+- **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny
+- **Color themes:** 3 HSL-based themes (Rainbow, Heatmap, Pastel) — selectable via ComboBox. Colors assigned by depth, never change with zoom
+- **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root
+- **Scan progress:** Shows elapsed time and files/sec rate during scans
+- **Preferences:** `%APPDATA%/SpaceView/prefs.txt` for welcome screen "don't show again"
 
-### Navigation Model
-- `nav_stack: Vec<usize>` — each entry is a sorted child index at that level
-- Zoom in: push index(es) to stack
-- Zoom out: pop from stack
-- Breadcrumbs built by walking nav_stack through sorted children
+### Navigation
+- Scroll: zoom in/out at cursor
+- Double-click: snap zoom into folder
+- Right-click / Backspace / Esc: zoom out to parent
+- Drag: pan view
+- Breadcrumbs: built from ancestor_chain() at camera center
 
 ### Reference Repos (in SAMPLES/, gitignored)
 - SpaceMonger 1.x source — XOR-rect animation, radix sort

@@ -1,6 +1,8 @@
 mod app;
+mod camera;
 mod scanner;
 mod treemap;
+mod world_layout;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

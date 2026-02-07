@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub struct FileNode {
@@ -11,18 +12,12 @@ pub struct FileNode {
     pub children: Vec<FileNode>,
 }
 
-impl FileNode {
-    pub fn sorted_children(&self) -> Vec<&FileNode> {
-        let mut kids: Vec<&FileNode> = self.children.iter().collect();
-        kids.sort_by(|a, b| b.size.cmp(&a.size));
-        kids
-    }
-}
 
 pub struct ScanProgress {
     pub files_scanned: AtomicU64,
     pub bytes_scanned: AtomicU64,
     pub cancel: AtomicBool,
+    pub scan_start: Instant,
 }
 
 impl ScanProgress {
@@ -31,6 +26,7 @@ impl ScanProgress {
             files_scanned: AtomicU64::new(0),
             bytes_scanned: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
+            scan_start: Instant::now(),
         }
     }
 }
