@@ -12,7 +12,7 @@ const MIN_SCREEN_PX: f32 = 2.0;
 const HEADER_PX: f32 = 16.0;
 const PAD_PX: f32 = 2.0;
 const BORDER_PX: f32 = 1.0;
-const VERSION: &str = "0.5.1";
+const VERSION: &str = "0.5.2";
 
 // ===================== Color Theme =====================
 
@@ -134,6 +134,10 @@ pub struct SpaceViewApp {
     // Welcome / About
     hide_welcome: bool,
     show_about: bool,
+
+    // About dialog textures
+    icon_texture: Option<egui::TextureHandle>,
+    face_texture: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone)]
@@ -172,6 +176,8 @@ impl SpaceViewApp {
             theme: ColorTheme::Rainbow,
             hide_welcome: load_hide_welcome(),
             show_about: false,
+            icon_texture: None,
+            face_texture: None,
         }
     }
 
@@ -249,6 +255,17 @@ impl SpaceViewApp {
     }
 }
 
+fn load_image_from_png(ctx: &egui::Context, name: &str, png_data: &[u8]) -> egui::TextureHandle {
+    let img = image::load_from_memory(png_data).expect("Failed to decode PNG");
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [w as usize, h as usize],
+        rgba.as_raw(),
+    );
+    ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR)
+}
+
 impl eframe::App for SpaceViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
@@ -273,7 +290,21 @@ impl eframe::App for SpaceViewApp {
 
         // ---- About popup ----
         if self.show_about {
+            // Lazy-load textures on first open
+            if self.icon_texture.is_none() {
+                self.icon_texture = Some(load_image_from_png(
+                    ctx, "app_icon", include_bytes!("../assets/icon.png"),
+                ));
+            }
+            if self.face_texture.is_none() {
+                self.face_texture = Some(load_image_from_png(
+                    ctx, "tront_face", include_bytes!("../assets/tront.png"),
+                ));
+            }
+
             let mut open = true;
+            let icon_tex = self.icon_texture.clone();
+            let face_tex = self.face_texture.clone();
             egui::Window::new("About SpaceView")
                 .collapsible(false)
                 .resizable(false)
@@ -281,10 +312,25 @@ impl eframe::App for SpaceViewApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
+                        // Icon at top
+                        if let Some(ref tex) = icon_tex {
+                            ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(64.0, 64.0)));
+                            ui.add_space(8.0);
+                        }
                         ui.heading(format!("SpaceView v{}", VERSION));
                         ui.add_space(4.0);
                         ui.label("Disk space visualizer");
-                        ui.label("By tront");
+                        ui.add_space(4.0);
+
+                        // Face next to author name
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 50.0);
+                            if let Some(ref tex) = face_tex {
+                                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(24.0, 24.0)));
+                            }
+                            ui.label("By tront");
+                        });
+
                         ui.add_space(4.0);
                         ui.label("Built with Rust + egui");
                         ui.add_space(12.0);

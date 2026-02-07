@@ -5,9 +5,13 @@ edition = "2021"
 
 [dependencies]
 eframe = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
 jwalk = "0.8"
 rfd = "0.15"
 sysinfo = "0.33"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"

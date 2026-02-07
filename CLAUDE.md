@@ -5,8 +5,10 @@ SpaceMonger-inspired disk space visualizer built with Rust + egui. By tront.
 ## Tech Stack
 - **Language:** Rust (edition 2021)
 - **UI Framework:** eframe/egui 0.31
+- **Image:** image 0.25 (PNG only)
 - **File Dialog:** rfd 0.15
 - **System Info:** sysinfo 0.33
+- **Build:** winresource 0.1 (Windows .exe icon embedding)
 
 ## Build & Run
 ```
@@ -15,11 +17,12 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.5.1)
+## Architecture (v0.5.2)
 
 ### Source Files
-- `src/main.rs` — Entry point, creates eframe window (1024x700)
-- `src/app.rs` — Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens
+- `src/main.rs` — Entry point, creates eframe window (1024x700), loads window icon
+- `src/app.rs` — Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens with images
+- `build.rs` — Embeds icon.ico into Windows .exe via winresource
 - `src/camera.rs` — Continuous Camera with bounds clamping: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations. MIN_ZOOM=1.0, MAX_ZOOM=5000
 - `src/scanner.rs` — Recursive directory scanner with progress tracking, elapsed time, scan rate, and cancellation
 - `src/world_layout.rs` — LayoutNode tree in world-space. Lazy expand_visible, prune, ancestor_chain (world_rects used for camera/expand/prune only)
@@ -37,6 +40,8 @@ cargo run            # run in debug mode
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root
 - **Scan progress:** Shows elapsed time and files/sec rate during scans
 - **Preferences:** `%APPDATA%/SpaceView/prefs.txt` for welcome screen "don't show again"
+- **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size) — treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`
+- **About dialog images:** Icon (64x64) at top, author face (24x24) next to "By tront". Textures lazy-loaded on first About open
 
 ### Navigation
 - Scroll: zoom in/out at cursor

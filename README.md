@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.1-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.2-blue" />
   <img alt="Rust" src="https://img.shields.io/badge/rust-2021-orange" />
   <img alt="egui" src="https://img.shields.io/badge/egui-0.31-green" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey" />
@@ -25,6 +25,10 @@
 
 <p align="center">
   <img src="docs/assets/screenshot.png" alt="SpaceView scanning a drive" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-about.png" alt="SpaceView About dialog" width="900" />
 </p>
 
 ---
