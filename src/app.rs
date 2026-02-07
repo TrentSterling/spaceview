@@ -12,7 +12,7 @@ const MIN_SCREEN_PX: f32 = 2.0;
 const HEADER_PX: f32 = 16.0;
 const PAD_PX: f32 = 2.0;
 const BORDER_PX: f32 = 1.0;
-const VERSION: &str = "0.5.2";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ===================== Color Theme =====================
 
