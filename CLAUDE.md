@@ -8,6 +8,7 @@ SpaceMonger-inspired disk space visualizer built with Rust + egui. By tront.
 - **Image:** image 0.25 (PNG only)
 - **File Dialog:** rfd 0.15
 - **System Info:** sysinfo 0.33
+- **HTTP:** ureq 2 (sync HTTP client, rustls TLS, for GitHub API version check)
 - **Build:** winresource 0.1 (Windows .exe icon embedding)
 
 ## Build & Run
@@ -17,7 +18,7 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.5.3)
+## Architecture (v0.5.4)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon
@@ -43,6 +44,7 @@ cargo run            # run in debug mode
 - **About dialog:** Auto-opens on first launch. "Don't show on startup" checkbox persisted to `%APPDATA%/SpaceView/prefs.txt`. Manual toggle via About button always works.
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.
 - **About dialog images:** Icon (64x64) at top, author face (24x24) next to "By tront". Textures lazy-loaded on first About open.
+- **Version check:** Background thread on startup hits GitHub releases API via ureq. Polls result in update loop. Shows "Update available" with download link in About dialog. Fails silently on network errors. Uses `is_newer_version()` for semantic comparison.
 
 ### Navigation
 - Scroll: zoom in/out at cursor

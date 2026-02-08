@@ -1,6 +1,6 @@
 [package]
 name = "spaceview"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 
 [dependencies]
@@ -9,6 +9,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 jwalk = "0.8"
 rfd = "0.15"
 sysinfo = "0.33"
+ureq = "2"
 
 [build-dependencies]
 winresource = "0.1"

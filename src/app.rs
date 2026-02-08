@@ -138,6 +138,10 @@ pub struct SpaceViewApp {
     // About dialog textures
     icon_texture: Option<egui::TextureHandle>,
     face_texture: Option<egui::TextureHandle>,
+
+    // Version check
+    update_check_receiver: Option<std::sync::mpsc::Receiver<Option<String>>>,
+    latest_version: Option<String>,
 }
 
 #[derive(Clone)]
@@ -157,8 +161,60 @@ struct BreadcrumbEntry {
     world_rect: egui::Rect,
 }
 
+/// Compare two version strings (e.g. "0.5.3" vs "0.5.4").
+/// Returns true if `remote` is strictly newer than `local`.
+fn is_newer_version(local: &str, remote: &str) -> bool {
+    let parse = |s: &str| -> Vec<u32> {
+        s.split('.').filter_map(|p| p.parse().ok()).collect()
+    };
+    let l = parse(local);
+    let r = parse(remote);
+    let len = l.len().max(r.len());
+    for i in 0..len {
+        let lv = l.get(i).copied().unwrap_or(0);
+        let rv = r.get(i).copied().unwrap_or(0);
+        if rv > lv {
+            return true;
+        }
+        if rv < lv {
+            return false;
+        }
+    }
+    false
+}
+
 impl SpaceViewApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        // Spawn background version check
+        let (update_tx, update_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Option<String> {
+                let resp = ureq::get("https://api.github.com/repos/TrentSterling/SpaceView/releases/latest")
+                    .set("User-Agent", &format!("SpaceView/{}", env!("CARGO_PKG_VERSION")))
+                    .call()
+                    .ok()?;
+                let body = resp.into_string().ok()?;
+                // Minimal JSON parsing: find "tag_name":"..."
+                let marker = "\"tag_name\":";
+                let idx = body.find(marker)?;
+                let rest = &body[idx + marker.len()..];
+                let rest = rest.trim_start();
+                if !rest.starts_with('"') {
+                    return None;
+                }
+                let rest = &rest[1..];
+                let end = rest.find('"')?;
+                let tag = &rest[..end];
+                let version = tag.strip_prefix('v').unwrap_or(tag);
+                if is_newer_version(env!("CARGO_PKG_VERSION"), version) {
+                    Some(version.to_string())
+                } else {
+                    None
+                }
+            })();
+            let _ = update_tx.send(result);
+        });
+
         Self {
             scan_root: None,
             scanning: false,
@@ -178,6 +234,8 @@ impl SpaceViewApp {
             show_about: !load_hide_about(),
             icon_texture: None,
             face_texture: None,
+            update_check_receiver: Some(update_rx),
+            latest_version: None,
         }
     }
 
@@ -288,6 +346,14 @@ impl eframe::App for SpaceViewApp {
             ctx.request_repaint();
         }
 
+        // Check for version update result
+        if let Some(ref rx) = self.update_check_receiver {
+            if let Ok(result) = rx.try_recv() {
+                self.latest_version = result;
+                self.update_check_receiver = None;
+            }
+        }
+
         // ---- About popup ----
         if self.show_about {
             // Lazy-load textures on first open
@@ -335,6 +401,19 @@ impl eframe::App for SpaceViewApp {
                         ui.label("Built with Rust + egui");
                         ui.add_space(12.0);
                     });
+
+                    // Update notification
+                    if let Some(ref ver) = self.latest_version {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Update available: v{}", ver));
+                            ui.hyperlink_to(
+                                "Download",
+                                "https://github.com/TrentSterling/SpaceView/releases/latest",
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
 
                     ui.separator();
                     ui.add_space(4.0);
