@@ -85,19 +85,19 @@ fn prefs_path() -> Option<PathBuf> {
     })
 }
 
-fn load_hide_welcome() -> bool {
+fn load_hide_about() -> bool {
     prefs_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.trim() == "hide_welcome=true")
+        .map(|s| s.trim() == "hide_about=true")
         .unwrap_or(false)
 }
 
-fn save_hide_welcome(hide: bool) {
+fn save_hide_about(hide: bool) {
     if let Some(p) = prefs_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, if hide { "hide_welcome=true" } else { "hide_welcome=false" });
+        let _ = std::fs::write(p, if hide { "hide_about=true" } else { "hide_about=false" });
     }
 }
 
@@ -131,8 +131,8 @@ pub struct SpaceViewApp {
     // Theme
     theme: ColorTheme,
 
-    // Welcome / About
-    hide_welcome: bool,
+    // About dialog
+    hide_about_on_start: bool,
     show_about: bool,
 
     // About dialog textures
@@ -174,8 +174,8 @@ impl SpaceViewApp {
             root_size: 0,
             last_time: 0.0,
             theme: ColorTheme::Rainbow,
-            hide_welcome: load_hide_welcome(),
-            show_about: false,
+            hide_about_on_start: load_hide_about(),
+            show_about: !load_hide_about(),
             icon_texture: None,
             face_texture: None,
         }
@@ -362,6 +362,14 @@ impl eframe::App for SpaceViewApp {
                         });
 
                     ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let mut hide = self.hide_about_on_start;
+                    if ui.checkbox(&mut hide, "Don't show on startup").changed() {
+                        self.hide_about_on_start = hide;
+                        save_hide_about(hide);
+                    }
+                    ui.add_space(4.0);
                     ui.vertical_centered(|ui| {
                         if ui.button("Close").clicked() {
                             self.show_about = false;
@@ -525,60 +533,46 @@ impl eframe::App for SpaceViewApp {
         // ---- Central panel: treemap ----
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.scan_root.is_none() && !self.scanning {
-                // Welcome screen
-                if self.hide_welcome {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() / 3.0);
-                        ui.label("Pick a drive or folder above to visualize disk usage.");
-                    });
-                } else {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() / 5.0);
-                        ui.heading(format!("SpaceView v{}", VERSION));
-                        ui.add_space(6.0);
-                        ui.label("A disk space visualizer inspired by SpaceMonger.");
-                        ui.label("Select a drive or folder to see where your space goes.");
-                        ui.add_space(16.0);
+                // Welcome screen (always shows quickhelp)
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() / 5.0);
+                    ui.heading(format!("SpaceView v{}", VERSION));
+                    ui.add_space(6.0);
+                    ui.label("A disk space visualizer inspired by SpaceMonger.");
+                    ui.label("Select a drive or folder to see where your space goes.");
+                    ui.add_space(16.0);
 
-                        if ui.button("Open Folder...").clicked() {
-                            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                                self.start_scan(path);
-                            }
+                    if ui.button("Open Folder...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.start_scan(path);
                         }
+                    }
 
-                        ui.add_space(20.0);
-                        ui.strong("Keyboard Shortcuts");
-                        ui.add_space(6.0);
+                    ui.add_space(20.0);
+                    ui.strong("Keyboard Shortcuts");
+                    ui.add_space(6.0);
 
-                        egui::Grid::new("welcome_shortcuts")
-                            .num_columns(2)
-                            .spacing([20.0, 4.0])
-                            .show(ui, |ui| {
-                                ui.label("Scroll");
-                                ui.label("Zoom in/out");
-                                ui.end_row();
-                                ui.label("Double-click");
-                                ui.label("Zoom into folder");
-                                ui.end_row();
-                                ui.label("Right-click");
-                                ui.label("Zoom out");
-                                ui.end_row();
-                                ui.label("Drag");
-                                ui.label("Pan view");
-                                ui.end_row();
-                                ui.label("Backspace / Esc");
-                                ui.label("Zoom out");
-                                ui.end_row();
-                            });
-
-                        ui.add_space(16.0);
-                        let mut hide = self.hide_welcome;
-                        if ui.checkbox(&mut hide, "Don't show this again").changed() {
-                            self.hide_welcome = hide;
-                            save_hide_welcome(hide);
-                        }
-                    });
-                }
+                    egui::Grid::new("welcome_shortcuts")
+                        .num_columns(2)
+                        .spacing([20.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("Scroll");
+                            ui.label("Zoom in/out");
+                            ui.end_row();
+                            ui.label("Double-click");
+                            ui.label("Zoom into folder");
+                            ui.end_row();
+                            ui.label("Right-click");
+                            ui.label("Zoom out");
+                            ui.end_row();
+                            ui.label("Drag");
+                            ui.label("Pan view");
+                            ui.end_row();
+                            ui.label("Backspace / Esc");
+                            ui.label("Zoom out");
+                            ui.end_row();
+                        });
+                });
                 return;
             }
 

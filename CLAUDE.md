@@ -17,7 +17,7 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.5.2)
+## Architecture (v0.5.3)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon
@@ -39,7 +39,8 @@ cargo run            # run in debug mode
 - **Color themes:** 3 HSL-based themes (Rainbow, Heatmap, Pastel). Selectable via ComboBox. Colors assigned by depth, never change with zoom.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans.
-- **Preferences:** `%APPDATA%/SpaceView/prefs.txt` for welcome screen "don't show again".
+- **Welcome screen:** Always shows quickhelp (version, description, shortcuts, Open Folder button). No hide option.
+- **About dialog:** Auto-opens on first launch. "Don't show on startup" checkbox persisted to `%APPDATA%/SpaceView/prefs.txt`. Manual toggle via About button always works.
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.
 - **About dialog images:** Icon (64x64) at top, author face (24x24) next to "By tront". Textures lazy-loaded on first About open.
 
