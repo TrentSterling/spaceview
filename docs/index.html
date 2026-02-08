@@ -55,7 +55,7 @@
         }
         .hero-bg .block {
             position: absolute;
-            border-radius: 4px;
+            border-radius: 6px;
             animation: pulse 4s ease-in-out infinite alternate;
         }
         @keyframes pulse {
@@ -180,6 +180,48 @@
             width: 100%;
             border-radius: 8px;
             box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .screenshot-frame img:hover {
+            transform: scale(1.02);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+
+        /* Lightbox */
+        .lightbox {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.92);
+            z-index: 1000;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+        }
+        .lightbox.active {
+            display: flex;
+        }
+        .lightbox img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 0 80px rgba(67, 97, 238, 0.3);
+            cursor: default;
+        }
+        .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 28px;
+            color: var(--text-dim);
+            font-size: 36px;
+            cursor: pointer;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+        .lightbox-close:hover {
+            color: var(--text);
         }
 
         /* Features */
@@ -316,13 +358,39 @@
 
 <!-- Animated treemap background blocks -->
 <div class="hero-bg">
-    <div class="block" style="left:2%;top:5%;width:35%;height:45%;background:#4361ee;animation-delay:0s"></div>
-    <div class="block" style="left:39%;top:5%;width:18%;height:20%;background:#f72585;animation-delay:0.5s"></div>
-    <div class="block" style="left:59%;top:5%;width:39%;height:30%;background:#7209b7;animation-delay:1s"></div>
-    <div class="block" style="left:39%;top:27%;width:18%;height:23%;background:#3a0ca3;animation-delay:1.5s"></div>
-    <div class="block" style="left:2%;top:52%;width:28%;height:20%;background:#4cc9f0;animation-delay:2s"></div>
-    <div class="block" style="left:32%;top:52%;width:25%;height:20%;background:#560bad;animation-delay:0.8s"></div>
-    <div class="block" style="left:59%;top:37%;width:39%;height:35%;background:#4361ee;animation-delay:1.2s"></div>
+    <!-- Large primary blocks -->
+    <div class="block" style="left:1%;top:3%;width:36%;height:44%;background:#4361ee;animation-delay:0s"></div>
+    <div class="block" style="left:39%;top:3%;width:19%;height:21%;background:#f72585;animation-delay:0.5s"></div>
+    <div class="block" style="left:60%;top:3%;width:38%;height:28%;background:#7209b7;animation-delay:1s"></div>
+    <div class="block" style="left:39%;top:26%;width:19%;height:21%;background:#3a0ca3;animation-delay:1.5s"></div>
+    <div class="block" style="left:1%;top:49%;width:27%;height:24%;background:#4cc9f0;animation-delay:2s"></div>
+    <div class="block" style="left:30%;top:49%;width:28%;height:24%;background:#560bad;animation-delay:0.8s"></div>
+    <div class="block" style="left:60%;top:33%;width:38%;height:40%;background:#4361ee;animation-delay:1.2s"></div>
+    <!-- Second tier: subdivisions inside the big blocks -->
+    <div class="block" style="left:1%;top:3%;width:17%;height:22%;background:#5a7df4;animation-delay:0.3s"></div>
+    <div class="block" style="left:20%;top:3%;width:17%;height:22%;background:#3651d4;animation-delay:1.8s"></div>
+    <div class="block" style="left:1%;top:27%;width:12%;height:20%;background:#2d48c8;animation-delay:2.3s"></div>
+    <div class="block" style="left:15%;top:27%;width:22%;height:20%;background:#5272f0;animation-delay:0.6s"></div>
+    <div class="block" style="left:60%;top:3%;width:20%;height:14%;background:#8b2fc0;animation-delay:1.7s"></div>
+    <div class="block" style="left:82%;top:3%;width:16%;height:14%;background:#6310a0;animation-delay:2.1s"></div>
+    <div class="block" style="left:60%;top:19%;width:38%;height:12%;background:#5e17a8;animation-delay:0.9s"></div>
+    <div class="block" style="left:60%;top:33%;width:18%;height:20%;background:#3854e0;animation-delay:1.4s"></div>
+    <div class="block" style="left:80%;top:33%;width:18%;height:20%;background:#516ef2;animation-delay:2.5s"></div>
+    <div class="block" style="left:60%;top:55%;width:38%;height:18%;background:#2b3fc0;animation-delay:0.4s"></div>
+    <!-- Third tier: small detail blocks -->
+    <div class="block" style="left:30%;top:49%;width:13%;height:12%;background:#6a1dac;animation-delay:1.1s"></div>
+    <div class="block" style="left:45%;top:49%;width:13%;height:12%;background:#4a0d90;animation-delay:1.9s"></div>
+    <div class="block" style="left:30%;top:63%;width:28%;height:10%;background:#7020c0;animation-delay:0.7s"></div>
+    <div class="block" style="left:1%;top:49%;width:13%;height:12%;background:#3ab8d8;animation-delay:2.4s"></div>
+    <div class="block" style="left:16%;top:49%;width:12%;height:12%;background:#5dd4ec;animation-delay:1.6s"></div>
+    <div class="block" style="left:1%;top:63%;width:27%;height:10%;background:#42c4e0;animation-delay:0.2s"></div>
+    <!-- Bottom edge fill -->
+    <div class="block" style="left:1%;top:75%;width:48%;height:20%;background:#3a0ca3;animation-delay:1.3s"></div>
+    <div class="block" style="left:51%;top:75%;width:47%;height:20%;background:#f72585;animation-delay:2.2s"></div>
+    <div class="block" style="left:1%;top:75%;width:24%;height:10%;background:#4a18b8;animation-delay:0.5s"></div>
+    <div class="block" style="left:27%;top:75%;width:22%;height:10%;background:#2e0a88;animation-delay:1.8s"></div>
+    <div class="block" style="left:51%;top:75%;width:24%;height:10%;background:#d91e72;animation-delay:2.6s"></div>
+    <div class="block" style="left:77%;top:75%;width:21%;height:10%;background:#ff3a94;animation-delay:0.1s"></div>
 </div>
 
 <div class="container">
@@ -357,11 +425,11 @@
 
     <section class="screenshot">
         <div class="screenshot-frame">
-            <img src="assets/screenshot.png" alt="SpaceView scanning a drive">
+            <img src="assets/screenshot.png" alt="SpaceView scanning a drive" onclick="openLightbox(this)">
             <p style="margin-top: 12px;">Scanning a 1.37 TB drive. Every rectangle is a file or folder, sized proportionally.</p>
         </div>
         <div class="screenshot-frame" style="margin-top: 24px;">
-            <img src="assets/screenshot-about.png" alt="SpaceView About dialog">
+            <img src="assets/screenshot-about.png" alt="SpaceView About dialog" onclick="openLightbox(this)">
             <p style="margin-top: 12px;">Built-in About dialog with keyboard shortcut reference.</p>
         </div>
     </section>
@@ -452,6 +520,27 @@
         <p>Made by <a href="https://github.com/TrentSterling">tront</a> | Inspired by <a href="https://en.wikipedia.org/wiki/SpaceMonger">SpaceMonger</a></p>
     </footer>
 </div>
+
+<!-- Lightbox overlay -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <span class="lightbox-close">&times;</span>
+    <img id="lightbox-img" src="" alt="" onclick="event.stopPropagation()">
+</div>
+
+<script>
+function openLightbox(img) {
+    var lb = document.getElementById('lightbox');
+    document.getElementById('lightbox-img').src = img.src;
+    document.getElementById('lightbox-img').alt = img.alt;
+    lb.classList.add('active');
+}
+function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('active');
+}
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeLightbox();
+});
+</script>
 
 </body>
 </html>
