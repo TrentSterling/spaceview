@@ -1,5 +1,5 @@
 use crate::camera::Camera;
-use crate::scanner::{FileNode, ScanProgress, scan_directory};
+use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory};
 use crate::treemap;
 use crate::world_layout::{LayoutNode, WorldLayout};
 use eframe::egui;
@@ -129,6 +129,7 @@ pub struct SpaceViewApp {
 
     // Interaction
     hovered_node_info: Option<HoveredInfo>,
+    context_menu_info: Option<HoveredInfo>,
     is_dragging: bool,
     /// Current depth context from camera center (for breadcrumbs/zoom frame)
     depth_context: Vec<BreadcrumbEntry>,
@@ -136,6 +137,9 @@ pub struct SpaceViewApp {
     // Cached status bar info
     root_name: String,
     root_size: u64,
+    root_file_count: u64,
+    scan_path: Option<PathBuf>,
+    show_free_space: bool,
 
     // Last frame time for dt calculation
     last_time: f64,
@@ -161,6 +165,7 @@ pub struct SpaceViewApp {
 struct HoveredInfo {
     name: String,
     size: u64,
+    file_count: u64,
     is_dir: bool,
     world_rect: egui::Rect,
     has_children: bool,
@@ -239,10 +244,14 @@ impl SpaceViewApp {
             world_layout: None,
             last_viewport: egui::Rect::NOTHING,
             hovered_node_info: None,
+            context_menu_info: None,
             is_dragging: false,
             depth_context: Vec::new(),
             root_name: String::new(),
             root_size: 0,
+            root_file_count: 0,
+            scan_path: None,
+            show_free_space: true,
             last_time: 0.0,
             theme: ColorTheme::Rainbow,
             dark_mode: prefs.dark_mode,
@@ -265,6 +274,7 @@ impl SpaceViewApp {
         self.scanning = true;
         self.depth_context.clear();
         self.hovered_node_info = None;
+        self.scan_path = Some(path.clone());
 
         let progress = Arc::new(ScanProgress::new());
         self.scan_progress = Some(progress.clone());
@@ -279,7 +289,29 @@ impl SpaceViewApp {
     }
 
     fn build_layout(&mut self, viewport: egui::Rect) {
-        if let Some(ref root) = self.scan_root {
+        if let Some(ref mut root) = self.scan_root {
+            // Inject free space as a child if enabled
+            if self.show_free_space {
+                if let Some(ref path) = self.scan_path {
+                    if let Some(free) = get_free_space(path) {
+                        if free > 0 {
+                            // Remove any previous free space node
+                            root.children.retain(|c| c.name != "<Free Space>");
+                            root.children.push(FileNode {
+                                name: "<Free Space>".to_string(),
+                                path: PathBuf::new(),
+                                size: free,
+                                is_dir: false,
+                                file_count: 0,
+                                children: Vec::new(),
+                            });
+                            root.size += free;
+                            root.children.sort_by(|a, b| b.size.cmp(&a.size));
+                        }
+                    }
+                }
+            }
+
             let aspect = viewport.height() / viewport.width();
             let layout = WorldLayout::new(root, aspect);
             self.camera.reset(layout.world_rect);
@@ -287,6 +319,7 @@ impl SpaceViewApp {
             self.world_layout = Some(layout);
             self.root_name = root.name.clone();
             self.root_size = root.size;
+            self.root_file_count = root.file_count;
         }
     }
 
@@ -356,6 +389,16 @@ impl eframe::App for SpaceViewApp {
             1.0 / 60.0
         };
         self.last_time = now;
+
+        // Handle drag-and-drop folders
+        let dropped: Vec<_> = ctx.input(|i| {
+            i.raw.dropped_files.iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if let Some(path) = dropped.into_iter().find(|p| p.is_dir()) {
+            self.start_scan(path);
+        }
 
         // Check for scan completion
         if self.scanning {
@@ -560,10 +603,27 @@ impl eframe::App for SpaceViewApp {
                     }
                 }
 
-                // Right-aligned About button
+                // Right-aligned About button + Free Space toggle
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("About").clicked() {
                         self.show_about = !self.show_about;
+                    }
+                    if self.scan_root.is_some() && !self.scanning {
+                        let fs_label = if self.show_free_space { "Hide Free" } else { "Show Free" };
+                        if ui.button(fs_label).clicked() {
+                            self.show_free_space = !self.show_free_space;
+                            // Remove free space node if hiding
+                            if !self.show_free_space {
+                                if let Some(ref mut root) = self.scan_root {
+                                    if let Some(pos) = root.children.iter().position(|c| c.name == "<Free Space>") {
+                                        let free_size = root.children[pos].size;
+                                        root.children.remove(pos);
+                                        root.size -= free_size;
+                                    }
+                                }
+                            }
+                            self.world_layout = None;
+                        }
                     }
                 });
             });
@@ -617,9 +677,10 @@ impl eframe::App for SpaceViewApp {
             egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
-                        "{}: {}",
+                        "{}: {} ({} files)",
                         self.root_name,
                         format_size(self.root_size),
+                        format_count(self.root_file_count),
                     ));
 
                     if let Some(ref info) = self.hovered_node_info {
@@ -630,13 +691,24 @@ impl eframe::App for SpaceViewApp {
                             0.0
                         };
                         let icon = if info.is_dir { "D" } else { "F" };
-                        ui.label(format!(
-                            "[{}] {} - {} ({:.1}%)",
-                            icon,
-                            info.name,
-                            format_size(info.size),
-                            pct
-                        ));
+                        if info.is_dir {
+                            ui.label(format!(
+                                "[{}] {} - {} ({:.1}%, {} files)",
+                                icon,
+                                info.name,
+                                format_size(info.size),
+                                pct,
+                                format_count(info.file_count),
+                            ));
+                        } else {
+                            ui.label(format!(
+                                "[{}] {} - {} ({:.1}%)",
+                                icon,
+                                info.name,
+                                format_size(info.size),
+                                pct
+                            ));
+                        }
                     }
                 });
             });
@@ -776,10 +848,72 @@ impl eframe::App for SpaceViewApp {
                 }
             }
 
-            // Right-click or Backspace/Escape: zoom out
-            let zoom_out = ctx.input(|i| i.pointer.secondary_clicked())
-                || ctx.input(|i| i.key_pressed(egui::Key::Backspace))
+            // Right-click context menu or zoom out
+            let right_clicked = ctx.input(|i| i.pointer.secondary_clicked());
+            let key_zoom_out = ctx.input(|i| i.key_pressed(egui::Key::Backspace))
                 || (!escape_consumed && ctx.input(|i| i.key_pressed(egui::Key::Escape)));
+
+            // Show context menu on right-click over a hovered node
+            let mut context_zoom_out = false;
+            if right_clicked && self.hovered_node_info.is_some() {
+                self.context_menu_info = self.hovered_node_info.clone();
+            }
+
+            if self.context_menu_info.is_some() {
+                let info = self.context_menu_info.clone().unwrap();
+                let menu_id = egui::Id::new("node_context_menu");
+                if right_clicked && self.hovered_node_info.is_some() {
+                    ui.memory_mut(|mem| mem.open_popup(menu_id));
+                }
+                egui::popup::popup_above_or_below_widget(
+                    ui,
+                    menu_id,
+                    &response,
+                    egui::AboveOrBelow::Below,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        ui.set_min_width(160.0);
+                        ui.label(egui::RichText::new(&info.name).strong());
+                        ui.label(format!("{} ({:.1}%)", format_size(info.size),
+                            if self.root_size > 0 { info.size as f64 / self.root_size as f64 * 100.0 } else { 0.0 }));
+                        ui.separator();
+                        if info.is_dir && info.has_children {
+                            if ui.button("Zoom In").clicked() {
+                                self.camera.snap_to(info.world_rect, viewport);
+                            }
+                        }
+                        if ui.button("Zoom Out").clicked() {
+                            context_zoom_out = true;
+                        }
+                        ui.separator();
+                        if ui.button("Open in Explorer").clicked() {
+                            if let Some(ref root) = self.scan_root {
+                                let path = find_path_for_node(root, &info.name, info.size);
+                                if let Some(p) = path {
+                                    let _ = std::process::Command::new("explorer")
+                                        .arg("/select,")
+                                        .arg(&p)
+                                        .spawn();
+                                }
+                            }
+                        }
+                        if ui.button("Copy Path").clicked() {
+                            if let Some(ref root) = self.scan_root {
+                                let path = find_path_for_node(root, &info.name, info.size);
+                                if let Some(p) = path {
+                                    ctx.copy_text(p.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    },
+                );
+                if !ui.memory(|mem| mem.is_popup_open(menu_id)) {
+                    self.context_menu_info = None;
+                }
+            }
+
+            let zoom_out = (right_clicked && self.hovered_node_info.is_none())
+                || key_zoom_out || context_zoom_out;
 
             if zoom_out {
                 // Zoom out: snap to parent of current center, or to root
@@ -981,7 +1115,11 @@ fn render_node(
                 if hh >= 14.0 && inner.width() > 30.0 {
                     let text_painter = painter.with_clip_rect(clipped);
                     let font_size = (hh - 4.0).clamp(9.0, 13.0);
-                    let size_text = format_size(node.size);
+                    let size_text = if node.file_count > 0 && inner.width() > 180.0 {
+                        format!("{} ({})", format_size(node.size), format_count(node.file_count))
+                    } else {
+                        format_size(node.size)
+                    };
                     let show_size = inner.width() > 100.0;
                     let size_reserve = if show_size {
                         size_text.len() as f32 * (font_size - 1.0) * 0.55 + 12.0
@@ -1013,7 +1151,10 @@ fn render_node(
     } else {
         // Files / empty dirs: single pass
         let inner = screen_rect.shrink(1.0);
-        let col = if node.is_dir {
+        let is_free_space = node.name == "<Free Space>";
+        let col = if is_free_space {
+            egui::Color32::from_rgb(30, 60, 30)
+        } else if node.is_dir {
             dir_color(node.color_index, theme)
         } else {
             file_color(node.color_index, theme)
@@ -1116,6 +1257,7 @@ fn hit_test_node(
     Some(HoveredInfo {
         name: node.name.clone(),
         size: node.size,
+        file_count: node.file_count,
         is_dir: node.is_dir,
         world_rect: node.world_rect,
         has_children: node.has_children,
@@ -1208,4 +1350,17 @@ fn format_duration(secs: f64) -> String {
     } else {
         format!("{}s", s)
     }
+}
+
+/// Find the path of a node by name and size in the file tree.
+fn find_path_for_node(root: &FileNode, name: &str, size: u64) -> Option<PathBuf> {
+    if root.name == name && root.size == size {
+        return Some(root.path.clone());
+    }
+    for child in &root.children {
+        if let Some(p) = find_path_for_node(child, name, size) {
+            return Some(p);
+        }
+    }
+    None
 }

@@ -9,7 +9,26 @@ pub struct FileNode {
     pub path: PathBuf,
     pub size: u64,
     pub is_dir: bool,
+    pub file_count: u64,
     pub children: Vec<FileNode>,
+}
+
+/// Get free space for the drive containing `path`.
+pub fn get_free_space(path: &Path) -> Option<u64> {
+    use sysinfo::Disks;
+    let disks = Disks::new_with_refreshed_list();
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut best: Option<(usize, u64)> = None;
+    for disk in disks.list() {
+        let mp = disk.mount_point();
+        if canonical.starts_with(mp) {
+            let len = mp.to_string_lossy().len();
+            if best.is_none() || len > best.unwrap().0 {
+                best = Some((len, disk.available_space()));
+            }
+        }
+    }
+    best.map(|(_, space)| space)
 }
 
 
@@ -44,6 +63,7 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
         path: root.to_path_buf(),
         size: 0,
         is_dir: true,
+        file_count: 0,
         children: Vec::new(),
     };
 
@@ -71,6 +91,7 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
             }
             if let Some(child) = scan_directory(&path, progress.clone()) {
                 node.size += child.size;
+                node.file_count += child.file_count;
                 if child.size > 0 {
                     node.children.push(child);
                 }
@@ -81,11 +102,13 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
             progress.bytes_scanned.fetch_add(file_size, Ordering::Relaxed);
 
             node.size += file_size;
+            node.file_count += 1;
             node.children.push(FileNode {
                 name: entry.file_name().to_string_lossy().to_string(),
                 path,
                 size: file_size,
                 is_dir: false,
+                file_count: 0,
                 children: Vec::new(),
             });
         }
