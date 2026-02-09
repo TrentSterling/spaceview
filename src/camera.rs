@@ -45,7 +45,7 @@ fn clamp_point(center: &mut egui::Pos2, zoom: f32, viewport: egui::Rect, wr: egu
 
 const SNAP_DURATION: f32 = 0.35; // seconds
 const SCROLL_ZOOM_SPEED: f32 = 0.15;
-const PAN_SMOOTHING: f32 = 0.25; // exponential lerp factor per tick — lower = smoother
+const PAN_SMOOTHING: f32 = 0.25; // exponential lerp factor per tick. Lower = smoother
 const ZOOM_SMOOTHING: f32 = 0.20;
 
 impl Camera {
@@ -173,7 +173,7 @@ impl Camera {
 
     /// Scroll-zoom centered on a world point (the point under cursor stays fixed).
     pub fn scroll_zoom(&mut self, scroll_delta: f32, world_focus: egui::Pos2, viewport: egui::Rect) {
-        // Interrupt snap animation — user takes manual control
+        // Interrupt snap animation. User takes manual control
         if self.animating {
             self.animating = false;
         }

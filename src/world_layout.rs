@@ -25,13 +25,13 @@ pub struct WorldLayout {
 }
 
 /// Fraction of parent rect height used for directory headers at a given depth.
-/// Approximate — world_rects are only used for camera/expand/prune decisions, not rendering.
+/// Approximate. World_rects are only used for camera/expand/prune decisions, not rendering.
 fn header_fraction(_depth: usize) -> f32 {
     0.01
 }
 
 /// Compute the content rect inside a directory rect (below the header).
-/// Approximate — world_rects are only used for camera/expand/prune decisions, not rendering.
+/// Approximate. World_rects are only used for camera/expand/prune decisions, not rendering.
 pub fn content_rect(dir_rect: egui::Rect, depth: usize) -> egui::Rect {
     let hh = dir_rect.height() * header_fraction(depth);
     let pad = 0.002 * dir_rect.width().min(dir_rect.height());
@@ -119,7 +119,7 @@ fn layout_children(file_node: &FileNode, parent_rect: egui::Rect, depth: usize) 
         let has_children = child.is_dir && !child.children.is_empty();
 
         // Color by depth: each nesting level gets its own palette color (SpaceMonger style)
-        let color_index = depth % 8;
+        let color_index = depth;
 
         nodes.push(LayoutNode {
             world_rect,

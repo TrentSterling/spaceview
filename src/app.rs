@@ -10,8 +10,8 @@ use std::sync::Arc;
 const ZOOM_FRAME_WIDTH: f32 = 4.0;
 const MIN_SCREEN_PX: f32 = 2.0;
 const HEADER_PX: f32 = 16.0;
-const PAD_PX: f32 = 2.0;
-const BORDER_PX: f32 = 1.0;
+const PAD_PX: f32 = 3.0;
+const BORDER_PX: f32 = 1.5;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ===================== Color Theme =====================
@@ -19,38 +19,30 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColorTheme {
     Rainbow,
-    Heatmap,
-    Pastel,
+    Neon,
+    Ocean,
 }
 
 impl ColorTheme {
     fn base_rgb(self, depth: usize) -> (u8, u8, u8) {
+        let golden = (depth as f32 * 137.508) % 360.0;
         match self {
-            ColorTheme::Rainbow => {
-                let hue = (depth as f32 * 45.0) % 360.0;
-                hsl_to_rgb(hue, 0.65, 0.55)
-            }
-            ColorTheme::Heatmap => {
-                let hue = (depth as f32 * 270.0 / 7.0) % 270.0;
-                hsl_to_rgb(hue, 0.70, 0.50)
-            }
-            ColorTheme::Pastel => {
-                let hue = (depth as f32 * 45.0) % 360.0;
-                hsl_to_rgb(hue, 0.40, 0.72)
-            }
+            ColorTheme::Rainbow => hsl_to_rgb(golden, 0.70, 0.55),
+            ColorTheme::Neon => hsl_to_rgb(golden, 0.90, 0.60),
+            ColorTheme::Ocean => hsl_to_rgb((golden + 180.0) % 360.0, 0.55, 0.50),
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             ColorTheme::Rainbow => "Rainbow",
-            ColorTheme::Heatmap => "Heatmap",
-            ColorTheme::Pastel => "Pastel",
+            ColorTheme::Neon => "Neon",
+            ColorTheme::Ocean => "Ocean",
         }
     }
 }
 
-const THEMES: [ColorTheme; 3] = [ColorTheme::Rainbow, ColorTheme::Heatmap, ColorTheme::Pastel];
+const THEMES: [ColorTheme; 3] = [ColorTheme::Rainbow, ColorTheme::Neon, ColorTheme::Ocean];
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -79,25 +71,45 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 
 // ===================== Preferences =====================
 
+struct Prefs {
+    hide_about: bool,
+    dark_mode: bool,
+}
+
 fn prefs_path() -> Option<PathBuf> {
     std::env::var("APPDATA").ok().map(|appdata| {
         PathBuf::from(appdata).join("SpaceView").join("prefs.txt")
     })
 }
 
-fn load_hide_about() -> bool {
-    prefs_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.trim() == "hide_about=true")
-        .unwrap_or(false)
+fn load_prefs() -> Prefs {
+    let mut prefs = Prefs { hide_about: false, dark_mode: true };
+    if let Some(content) = prefs_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        // Backwards-compatible: old single-line format "hide_about=true" still works
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some((key, val)) = line.split_once('=') {
+                match key.trim() {
+                    "hide_about" => prefs.hide_about = val.trim() == "true",
+                    "dark_mode" => prefs.dark_mode = val.trim() == "true",
+                    _ => {}
+                }
+            }
+        }
+    }
+    prefs
 }
 
-fn save_hide_about(hide: bool) {
+fn save_prefs(prefs: &Prefs) {
     if let Some(p) = prefs_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, if hide { "hide_about=true" } else { "hide_about=false" });
+        let content = format!(
+            "hide_about={}\ndark_mode={}",
+            prefs.hide_about, prefs.dark_mode,
+        );
+        let _ = std::fs::write(p, content);
     }
 }
 
@@ -130,6 +142,7 @@ pub struct SpaceViewApp {
 
     // Theme
     theme: ColorTheme,
+    dark_mode: bool,
 
     // About dialog
     hide_about_on_start: bool,
@@ -185,6 +198,8 @@ fn is_newer_version(local: &str, remote: &str) -> bool {
 
 impl SpaceViewApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let prefs = load_prefs();
+
         // Spawn background version check
         let (update_tx, update_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -230,8 +245,9 @@ impl SpaceViewApp {
             root_size: 0,
             last_time: 0.0,
             theme: ColorTheme::Rainbow,
-            hide_about_on_start: load_hide_about(),
-            show_about: !load_hide_about(),
+            dark_mode: prefs.dark_mode,
+            hide_about_on_start: prefs.hide_about,
+            show_about: !prefs.hide_about,
             icon_texture: None,
             face_texture: None,
             update_check_receiver: Some(update_rx),
@@ -326,6 +342,13 @@ fn load_image_from_png(ctx: &egui::Context, name: &str, png_data: &[u8]) -> egui
 
 impl eframe::App for SpaceViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply dark/light mode
+        if self.dark_mode {
+            ctx.set_visuals(egui::Visuals::dark());
+        } else {
+            ctx.set_visuals(egui::Visuals::light());
+        }
+
         let now = ctx.input(|i| i.time);
         let dt = if self.last_time > 0.0 {
             (now - self.last_time) as f32
@@ -355,6 +378,11 @@ impl eframe::App for SpaceViewApp {
         }
 
         // ---- About popup ----
+        let mut escape_consumed = false;
+        if self.show_about && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_about = false;
+            escape_consumed = true;
+        }
         if self.show_about {
             // Lazy-load textures on first open
             if self.icon_texture.is_none() {
@@ -446,7 +474,7 @@ impl eframe::App for SpaceViewApp {
                     let mut hide = self.hide_about_on_start;
                     if ui.checkbox(&mut hide, "Don't show on startup").changed() {
                         self.hide_about_on_start = hide;
-                        save_hide_about(hide);
+                        save_prefs(&Prefs { hide_about: hide, dark_mode: self.dark_mode });
                     }
                     ui.add_space(4.0);
                     ui.vertical_centered(|ui| {
@@ -500,7 +528,7 @@ impl eframe::App for SpaceViewApp {
                         );
                         if elapsed >= 1.0 {
                             text += &format!(
-                                " — {} ({}/sec)",
+                                " - {} ({}/sec)",
                                 format_duration(elapsed),
                                 format_count(rate as u64),
                             );
@@ -514,7 +542,7 @@ impl eframe::App for SpaceViewApp {
                     }
                 }
 
-                // Theme selector
+                // Theme selector + dark/light toggle
                 if !self.scanning {
                     ui.separator();
                     let current_label = self.theme.label();
@@ -525,6 +553,11 @@ impl eframe::App for SpaceViewApp {
                                 ui.selectable_value(&mut self.theme, t, t.label());
                             }
                         });
+                    let mode_label = if self.dark_mode { "Light" } else { "Dark" };
+                    if ui.button(mode_label).clicked() {
+                        self.dark_mode = !self.dark_mode;
+                        save_prefs(&Prefs { hide_about: self.hide_about_on_start, dark_mode: self.dark_mode });
+                    }
                 }
 
                 // Right-aligned About button
@@ -584,7 +617,7 @@ impl eframe::App for SpaceViewApp {
             egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
-                        "{} — {}",
+                        "{}: {}",
                         self.root_name,
                         format_size(self.root_size),
                     ));
@@ -598,7 +631,7 @@ impl eframe::App for SpaceViewApp {
                         };
                         let icon = if info.is_dir { "D" } else { "F" };
                         ui.label(format!(
-                            "[{}] {} — {} ({:.1}%)",
+                            "[{}] {} - {} ({:.1}%)",
                             icon,
                             info.name,
                             format_size(info.size),
@@ -746,7 +779,7 @@ impl eframe::App for SpaceViewApp {
             // Right-click or Backspace/Escape: zoom out
             let zoom_out = ctx.input(|i| i.pointer.secondary_clicked())
                 || ctx.input(|i| i.key_pressed(egui::Key::Backspace))
-                || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+                || (!escape_consumed && ctx.input(|i| i.key_pressed(egui::Key::Escape)));
 
             if zoom_out {
                 // Zoom out: snap to parent of current center, or to root
@@ -865,7 +898,7 @@ impl eframe::App for SpaceViewApp {
 //
 // Screen-space rendering pipeline (v0.5.0):
 //   Children are positioned at render time via treemap::layout in screen pixels.
-//   Fixed 16px headers, 2px padding, 1px border — no proportional world-space mismatch.
+//   Fixed 16px headers, 3px padding, 1.5px border. No proportional world-space mismatch.
 //   For directories with children: body fill → recurse children → header on top
 //   For files/empty dirs: single-pass fill + clipped text
 //
@@ -979,7 +1012,7 @@ fn render_node(
         }
     } else {
         // Files / empty dirs: single pass
-        let inner = screen_rect.shrink(0.5);
+        let inner = screen_rect.shrink(1.0);
         let col = if node.is_dir {
             dir_color(node.color_index, theme)
         } else {
@@ -1110,11 +1143,9 @@ fn header_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
 
 fn body_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);
-    egui::Color32::from_rgb(
-        (r as f32 * 0.18) as u8,
-        (g as f32 * 0.18) as u8,
-        (b as f32 * 0.18) as u8,
-    )
+    let gray = ((r as f32 + g as f32 + b as f32) / 3.0) as u8;
+    let mix = |c: u8| ((c as f32 * 0.3 + gray as f32 * 0.7) * 0.15) as u8;
+    egui::Color32::from_rgb(mix(r), mix(g), mix(b))
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
