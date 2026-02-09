@@ -44,6 +44,20 @@ impl ColorTheme {
 
 const THEMES: [ColorTheme; 3] = [ColorTheme::Rainbow, ColorTheme::Neon, ColorTheme::Ocean];
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ViewMode {
+    Treemap,
+    List,
+    LargestFiles,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SortColumn {
+    Name,
+    Size,
+    FileCount,
+}
+
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let h2 = h / 60.0;
@@ -120,7 +134,7 @@ pub struct SpaceViewApp {
     scan_root: Option<FileNode>,
     scanning: bool,
     scan_progress: Option<Arc<ScanProgress>>,
-    scan_receiver: Option<std::sync::mpsc::Receiver<Option<FileNode>>>,
+    scan_receiver: Option<std::sync::mpsc::Receiver<(Option<FileNode>, Option<Vec<(String, u64, String)>>)>>,
 
     // Camera + layout
     camera: Camera,
@@ -162,6 +176,14 @@ pub struct SpaceViewApp {
 
     // Pending delete confirmation
     pending_delete: Option<PathBuf>,
+
+    // View mode
+    view_mode: ViewMode,
+    search_text: String,
+    list_sort: SortColumn,
+    list_sort_asc: bool,
+    list_path: Vec<String>,
+    cached_largest: Option<Vec<(String, u64, String)>>,
 }
 
 #[derive(Clone)]
@@ -265,6 +287,12 @@ impl SpaceViewApp {
             update_check_receiver: Some(update_rx),
             latest_version: None,
             pending_delete: None,
+            view_mode: ViewMode::Treemap,
+            search_text: String::new(),
+            list_sort: SortColumn::Size,
+            list_sort_asc: false,
+            list_path: Vec::new(),
+            cached_largest: None,
         }
     }
 
@@ -279,6 +307,8 @@ impl SpaceViewApp {
         self.depth_context.clear();
         self.hovered_node_info = None;
         self.scan_path = Some(path.clone());
+        self.cached_largest = None;
+        self.list_path.clear();
 
         let progress = Arc::new(ScanProgress::new());
         self.scan_progress = Some(progress.clone());
@@ -288,7 +318,17 @@ impl SpaceViewApp {
 
         std::thread::spawn(move || {
             let result = scan_directory(&path, progress);
-            let _ = tx.send(result);
+            // Pre-collect largest files while we already have the tree (no clone needed)
+            let largest = if let Some(ref root) = result {
+                let mut files: Vec<(String, u64, String)> = Vec::new();
+                collect_all_files(root, &mut files);
+                files.sort_by(|a, b| b.1.cmp(&a.1));
+                files.truncate(1000);
+                Some(files)
+            } else {
+                None
+            };
+            let _ = tx.send((result, largest));
         });
     }
 
@@ -299,7 +339,10 @@ impl SpaceViewApp {
                 if let Some(ref path) = self.scan_path {
                     if let Some(free) = get_free_space(path) {
                         if free > 0 {
-                            // Remove any previous free space node
+                            // Remove any previous free space node and its size
+                            if let Some(old) = root.children.iter().find(|c| c.name == "<Free Space>") {
+                                root.size -= old.size;
+                            }
                             root.children.retain(|c| c.name != "<Free Space>");
                             root.children.push(FileNode {
                                 name: "<Free Space>".to_string(),
@@ -407,8 +450,9 @@ impl eframe::App for SpaceViewApp {
         // Check for scan completion
         if self.scanning {
             if let Some(ref rx) = self.scan_receiver {
-                if let Ok(result) = rx.try_recv() {
+                if let Ok((result, largest)) = rx.try_recv() {
                     self.scan_root = result;
+                    self.cached_largest = largest;
                     self.scanning = false;
                     self.scan_receiver = None;
                 }
@@ -657,12 +701,23 @@ impl eframe::App for SpaceViewApp {
                     }
                 }
 
+                // View mode tabs
+                if self.scan_root.is_some() && !self.scanning {
+                    ui.separator();
+                    ui.selectable_value(&mut self.view_mode, ViewMode::Treemap, "Map");
+                    ui.selectable_value(&mut self.view_mode, ViewMode::List, "List");
+                    ui.selectable_value(&mut self.view_mode, ViewMode::LargestFiles, "Top Files");
+                }
+
                 // Right-aligned About button + Free Space toggle
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("About").clicked() {
                         self.show_about = !self.show_about;
                     }
                     if self.scan_root.is_some() && !self.scanning {
+                        ui.add(egui::TextEdit::singleline(&mut self.search_text)
+                            .hint_text("Search...")
+                            .desired_width(120.0));
                         let fs_label = if self.show_free_space { "Hide Free" } else { "Show Free" };
                         if ui.button(fs_label).clicked() {
                             self.show_free_space = !self.show_free_space;
@@ -685,42 +740,67 @@ impl eframe::App for SpaceViewApp {
             // Breadcrumb bar
             if self.scan_root.is_some() && !self.scanning {
                 ui.horizontal(|ui| {
-                    // Root crumb
-                    if self.depth_context.is_empty() {
-                        ui.strong(&self.root_name);
-                    } else {
-                        let root_name = self.root_name.clone();
-                        if ui.link(&root_name).clicked() {
-                            if let Some(ref layout) = self.world_layout {
-                                let viewport = self.last_viewport;
-                                if !viewport.is_negative() {
-                                    self.camera.snap_to(layout.world_rect, viewport);
+                    match self.view_mode {
+                        ViewMode::Treemap => {
+                            if self.depth_context.is_empty() {
+                                ui.strong(&self.root_name);
+                            } else {
+                                let root_name = self.root_name.clone();
+                                if ui.link(&root_name).clicked() {
+                                    if let Some(ref layout) = self.world_layout {
+                                        let viewport = self.last_viewport;
+                                        if !viewport.is_negative() {
+                                            self.camera.snap_to(layout.world_rect, viewport);
+                                        }
+                                    }
+                                }
+                            }
+                            let crumbs = self.depth_context.clone();
+                            let last_idx = crumbs.len().saturating_sub(1);
+                            for (i, crumb) in crumbs.iter().enumerate() {
+                                ui.label(">");
+                                if i < last_idx {
+                                    if ui.link(&crumb.name).clicked() {
+                                        let viewport = self.last_viewport;
+                                        if !viewport.is_negative() {
+                                            self.camera.snap_to(crumb.world_rect, viewport);
+                                        }
+                                    }
+                                } else {
+                                    ui.strong(&crumb.name);
+                                }
+                            }
+                            if self.camera.zoom > 1.5 {
+                                ui.separator();
+                                ui.label(format!("{:.0}x", self.camera.zoom));
+                            }
+                        }
+                        ViewMode::List => {
+                            let root_name = self.root_name.clone();
+                            if self.list_path.is_empty() {
+                                ui.strong(&root_name);
+                            } else {
+                                if ui.link(&root_name).clicked() {
+                                    self.list_path.clear();
+                                }
+                            }
+                            let path = self.list_path.clone();
+                            let last_idx = path.len().saturating_sub(1);
+                            for (i, segment) in path.iter().enumerate() {
+                                ui.label(">");
+                                if i < last_idx {
+                                    if ui.link(segment).clicked() {
+                                        self.list_path.truncate(i + 1);
+                                    }
+                                } else {
+                                    ui.strong(segment);
                                 }
                             }
                         }
-                    }
-
-                    // Depth context crumbs
-                    let crumbs = self.depth_context.clone();
-                    let last_idx = crumbs.len().saturating_sub(1);
-                    for (i, crumb) in crumbs.iter().enumerate() {
-                        ui.label(">");
-                        if i < last_idx {
-                            if ui.link(&crumb.name).clicked() {
-                                let viewport = self.last_viewport;
-                                if !viewport.is_negative() {
-                                    self.camera.snap_to(crumb.world_rect, viewport);
-                                }
-                            }
-                        } else {
-                            ui.strong(&crumb.name);
+                        ViewMode::LargestFiles => {
+                            ui.strong(&self.root_name);
+                            ui.label("> Largest Files");
                         }
-                    }
-
-                    // Zoom level indicator
-                    if self.camera.zoom > 1.5 {
-                        ui.separator();
-                        ui.label(format!("{:.0}x", self.camera.zoom));
                     }
                 });
             }
@@ -854,6 +934,9 @@ impl eframe::App for SpaceViewApp {
                     self.rebuild_layout_preserving_camera(viewport);
                 }
             }
+
+            match self.view_mode {
+            ViewMode::Treemap => {
 
             let has_layout = self.world_layout.is_some();
             if !has_layout {
@@ -1089,6 +1172,244 @@ impl eframe::App for SpaceViewApp {
             if camera_moving {
                 ctx.request_repaint();
             }
+
+            } // ViewMode::Treemap
+
+            ViewMode::List => {
+                if let Some(ref root) = self.scan_root {
+                    let current_dir = if self.list_path.is_empty() {
+                        root
+                    } else {
+                        find_dir_by_path(root, &self.list_path).unwrap_or(root)
+                    };
+                    let parent_size = current_dir.size.max(1);
+                    let depth = self.list_path.len() + 1;
+                    let theme = self.theme;
+
+                    // Collect entries as owned data (avoids borrow issues)
+                    let mut entries: Vec<(String, u64, u64, bool, bool, PathBuf)> = current_dir.children.iter()
+                        .map(|c| (c.name.clone(), c.size, c.file_count, c.is_dir, !c.children.is_empty(), c.path.clone()))
+                        .collect();
+
+                    // Search filter
+                    if !self.search_text.is_empty() {
+                        let q = self.search_text.to_lowercase();
+                        entries.retain(|e| e.0.to_lowercase().contains(&q));
+                    }
+
+                    // Sort
+                    match self.list_sort {
+                        SortColumn::Name => {
+                            entries.sort_by(|a, b| {
+                                let dir_order = b.3.cmp(&a.3); // dirs first
+                                if dir_order != std::cmp::Ordering::Equal { return dir_order; }
+                                let cmp = a.0.to_lowercase().cmp(&b.0.to_lowercase());
+                                if self.list_sort_asc { cmp } else { cmp.reverse() }
+                            });
+                        }
+                        SortColumn::Size => {
+                            entries.sort_by(|a, b| {
+                                let cmp = b.1.cmp(&a.1);
+                                if self.list_sort_asc { cmp.reverse() } else { cmp }
+                            });
+                        }
+                        SortColumn::FileCount => {
+                            entries.sort_by(|a, b| {
+                                let cmp = b.2.cmp(&a.2);
+                                if self.list_sort_asc { cmp.reverse() } else { cmp }
+                            });
+                        }
+                    }
+
+                    // Column headers (pre-compute arrows to avoid borrow conflict)
+                    let arrow = |col: SortColumn| -> &str {
+                        if self.list_sort == col {
+                            if self.list_sort_asc { " ^" } else { " v" }
+                        } else { "" }
+                    };
+                    let name_arrow = arrow(SortColumn::Name).to_string();
+                    let size_arrow = arrow(SortColumn::Size).to_string();
+                    let fc_arrow = arrow(SortColumn::FileCount).to_string();
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let w = ui.available_width();
+                        if ui.add_sized([w * 0.50, 18.0], egui::SelectableLabel::new(false,
+                            format!("Name{}", name_arrow))).clicked() {
+                            if self.list_sort == SortColumn::Name { self.list_sort_asc = !self.list_sort_asc; }
+                            else { self.list_sort = SortColumn::Name; self.list_sort_asc = true; }
+                        }
+                        if ui.add_sized([w * 0.20, 18.0], egui::SelectableLabel::new(false,
+                            format!("Size{}", size_arrow))).clicked() {
+                            if self.list_sort == SortColumn::Size { self.list_sort_asc = !self.list_sort_asc; }
+                            else { self.list_sort = SortColumn::Size; self.list_sort_asc = false; }
+                        }
+                        ui.add_sized([w * 0.10, 18.0], egui::Label::new("%"));
+                        if ui.add_sized([w * 0.15, 18.0], egui::SelectableLabel::new(false,
+                            format!("Files{}", fc_arrow))).clicked() {
+                            if self.list_sort == SortColumn::FileCount { self.list_sort_asc = !self.list_sort_asc; }
+                            else { self.list_sort = SortColumn::FileCount; self.list_sort_asc = false; }
+                        }
+                    });
+                    ui.separator();
+
+                    let mut nav_target: Option<String> = None;
+                    let list_action: std::cell::Cell<Option<(usize, u8)>> = std::cell::Cell::new(None);
+
+                    // ".." entry (outside virtual scroll)
+                    if !self.list_path.is_empty() {
+                        if ui.selectable_label(false, "  ..").double_clicked() {
+                            nav_target = Some("..".to_string());
+                        }
+                    }
+
+                    if entries.is_empty() && !self.search_text.is_empty() {
+                        ui.label("No matching items.");
+                    } else {
+                        let row_h = 22.0;
+                        egui::ScrollArea::vertical().auto_shrink(false).show_rows(
+                            ui, row_h, entries.len(), |ui, row_range| {
+                            for i in row_range {
+                                let (name, size, file_count, is_dir, has_children, _path) = &entries[i];
+                                let pct = (*size as f64 / parent_size as f64) * 100.0;
+                                let (r, g, b) = if *name == "<Free Space>" {
+                                    (60u8, 140u8, 60u8)
+                                } else {
+                                    theme.base_rgb(depth)
+                                };
+                                let icon_col = egui::Color32::from_rgb(r, g, b);
+                                let icon = if *is_dir { "D" } else { "F" };
+
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let w = ui.available_width();
+
+                                    let name_text = format!("[{}] {}", icon, name);
+                                    let label = if *is_dir {
+                                        egui::RichText::new(&name_text).strong().color(icon_col)
+                                    } else {
+                                        egui::RichText::new(&name_text)
+                                    };
+                                    let resp = ui.add_sized([w * 0.50, 18.0],
+                                        egui::SelectableLabel::new(false, label));
+                                    if resp.double_clicked() && *is_dir && *has_children {
+                                        nav_target = Some(name.clone());
+                                    }
+                                    resp.context_menu(|ui| {
+                                        ui.label(egui::RichText::new(name).strong());
+                                        ui.label(format!("{} ({:.1}%)", format_size(*size), pct));
+                                        ui.separator();
+                                        if ui.button("Open in Explorer").clicked() {
+                                            list_action.set(Some((i, 0)));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Copy Path").clicked() {
+                                            list_action.set(Some((i, 1)));
+                                            ui.close_menu();
+                                        }
+                                        if *name != "<Free Space>" {
+                                            ui.separator();
+                                            if ui.button("Delete to Recycle Bin").clicked() {
+                                                list_action.set(Some((i, 2)));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_sized([w * 0.20, 18.0], egui::Label::new(format_size(*size)));
+                                    ui.add_sized([w * 0.10, 18.0], egui::Label::new(format!("{:.1}%", pct)));
+                                    let fc = if *is_dir { format_count(*file_count) } else { String::new() };
+                                    ui.add_sized([w * 0.15, 18.0], egui::Label::new(fc));
+                                });
+                            }
+                        });
+                    }
+
+                    // Handle navigation
+                    if let Some(ref target) = nav_target {
+                        if target == ".." {
+                            self.list_path.pop();
+                        } else {
+                            self.list_path.push(target.clone());
+                        }
+                    }
+                    // Handle context menu actions
+                    if let Some((idx, action)) = list_action.get() {
+                        let path = &entries[idx].5;
+                        match action {
+                            0 => { // Open in Explorer
+                                let _ = std::process::Command::new("explorer")
+                                    .arg("/select,")
+                                    .arg(path)
+                                    .spawn();
+                            }
+                            1 => { // Copy Path
+                                ctx.copy_text(path.to_string_lossy().to_string());
+                            }
+                            2 => { // Delete to Recycle Bin
+                                self.pending_delete = Some(path.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            ViewMode::LargestFiles => {
+                // Data is pre-collected during scan (no freeze on tab click)
+                if let Some(ref files) = self.cached_largest {
+                    let total_size = self.root_size.max(1);
+                    let theme = self.theme;
+                    {
+                    let mut filtered: Vec<(usize, &(String, u64, String))> = files.iter().enumerate().collect();
+                    if !self.search_text.is_empty() {
+                        let q = self.search_text.to_lowercase();
+                        filtered.retain(|(_, f)| f.0.to_lowercase().contains(&q) || f.2.to_lowercase().contains(&q));
+                    }
+
+                    // Column headers
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let w = ui.available_width();
+                        ui.add_sized([w * 0.04, 18.0], egui::Label::new("#"));
+                        ui.add_sized([w * 0.28, 18.0], egui::Label::new("Name"));
+                        ui.add_sized([w * 0.38, 18.0], egui::Label::new("Path"));
+                        ui.add_sized([w * 0.15, 18.0], egui::Label::new("Size"));
+                        ui.add_sized([w * 0.10, 18.0], egui::Label::new("%"));
+                    });
+                    ui.separator();
+
+                    if filtered.is_empty() && !self.search_text.is_empty() {
+                        ui.label("No matching files.");
+                    } else {
+                        let row_h = 22.0;
+                        egui::ScrollArea::vertical().auto_shrink(false).show_rows(
+                            ui, row_h, filtered.len(), |ui, row_range| {
+                            for rank in row_range {
+                                let (_, entry) = &filtered[rank];
+                                let pct = (entry.1 as f64 / total_size as f64) * 100.0;
+                                let ci = rank % 20;
+                                let (r, g, b) = theme.base_rgb(ci);
+
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let w = ui.available_width();
+                                    ui.add_sized([w * 0.04, 18.0], egui::Label::new(
+                                        egui::RichText::new(format!("{}", rank + 1)).weak()));
+                                    ui.add_sized([w * 0.28, 18.0], egui::Label::new(
+                                        egui::RichText::new(&entry.0).color(egui::Color32::from_rgb(r, g, b))));
+                                    ui.add_sized([w * 0.38, 18.0], egui::Label::new(
+                                        egui::RichText::new(&entry.2).weak()));
+                                    ui.add_sized([w * 0.15, 18.0], egui::Label::new(format_size(entry.1)));
+                                    ui.add_sized([w * 0.10, 18.0], egui::Label::new(format!("{:.1}%", pct)));
+                                });
+                            }
+                        });
+                    }
+                }
+                } // else if cached_largest
+            }
+
+            } // match self.view_mode
         });
     }
 }
@@ -1329,6 +1650,26 @@ fn hit_test_node(
         has_children: node.has_children,
         screen_rect,
     })
+}
+
+// ===================== Tree Helpers =====================
+
+fn find_dir_by_path<'a>(root: &'a FileNode, path: &[String]) -> Option<&'a FileNode> {
+    let mut current = root;
+    for segment in path {
+        current = current.children.iter().find(|c| c.name == *segment && c.is_dir)?;
+    }
+    Some(current)
+}
+
+fn collect_all_files(node: &FileNode, files: &mut Vec<(String, u64, String)>) {
+    for child in &node.children {
+        if child.is_dir {
+            collect_all_files(child, files);
+        } else if child.name != "<Free Space>" {
+            files.push((child.name.clone(), child.size, child.path.to_string_lossy().to_string()));
+        }
+    }
 }
 
 // ===================== Colors =====================

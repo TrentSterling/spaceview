@@ -17,11 +17,11 @@ pub struct FileNode {
 pub fn get_free_space(path: &Path) -> Option<u64> {
     use sysinfo::Disks;
     let disks = Disks::new_with_refreshed_list();
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Don't use canonicalize: it adds \\?\ prefix on Windows which breaks starts_with
     let mut best: Option<(usize, u64)> = None;
     for disk in disks.list() {
         let mp = disk.mount_point();
-        if canonical.starts_with(mp) {
+        if path.starts_with(mp) {
             let len = mp.to_string_lossy().len();
             if best.is_none() || len > best.unwrap().0 {
                 best = Some((len, disk.available_space()));

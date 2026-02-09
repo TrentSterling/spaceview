@@ -4,9 +4,9 @@ Features sourced from SpaceMonger (SM), WinDirStat (WDS), and SpaceSniffer (SS).
 
 ## High Impact
 
-- [ ] **Free space block** (SM, WDS, SS). Show free disk space as a dedicated rectangle in the treemap. Toggle visibility on/off.
-- [ ] **Right-click context menu** (SM, WDS, SS). Open in Explorer, Properties dialog, Delete to Recycle Bin. Context-sensitive options.
-- [ ] **Delete files** (SM, WDS, SS). Delete to recycle bin with confirmation prompt. Optional auto-rescan after deletion. Safety lock option to disable delete.
+- [x] **Free space block** (SM, WDS, SS). Show free disk space as a dedicated rectangle in the treemap. Toggle visibility on/off.
+- [x] **Right-click context menu** (SM, WDS, SS). Open in Explorer, Properties dialog, Delete to Recycle Bin. Context-sensitive options.
+- [x] **Delete files** (SM, WDS, SS). Delete to recycle bin with confirmation prompt. Optional auto-rescan after deletion. Safety lock option to disable delete.
 - [ ] **File type coloring** (WDS, SS). Color by extension instead of (or in addition to) depth. Extension legend/breakdown panel.
 - [ ] **Multiple views/tabs** (WDS). File tree list, largest files, duplicates, extension breakdown, treemap. Side-by-side or tabbed.
 - [ ] **Duplicate file detection** (WDS). Hash-based dedup with tiered hashing strategy (small/medium/large files). Group by hash, show count and total size.
@@ -25,11 +25,11 @@ Features sourced from SpaceMonger (SM), WinDirStat (WDS), and SpaceSniffer (SS).
 - [ ] **Extension breakdown panel** (WDS). List of file types with count and total size per extension. Click extension to highlight in treemap.
 - [ ] **Density/detail slider** (SM). Control minimum rectangle display size. -3 to +3 range.
 - [ ] **Animated zoom** (SM). XOR-rect morphing animation during zoom transitions. 16-frame sequence.
-- [ ] **Scan pause/resume** (WDS). Suspend and resume scanning. Progress shown in taskbar.
+- [x] **Scan pause/resume** (WDS). Suspend and resume scanning. Progress shown in taskbar.
 
 ## Nice to Have
 
-- [ ] **Drag and drop folders** (SS). Drop a folder onto the window to scan it.
+- [x] **Drag and drop folders** (SS). Drop a folder onto the window to scan it.
 - [ ] **Command line interface** (SS). `spaceview.exe scan C:\ filter *.jpg`. Batch automation support.
 - [ ] **File attributes display** (SM, WDS). Show Archive, Hidden, System, Compressed, Encrypted, etc.
 - [ ] **Percentage display** (SM, WDS). Show % of parent and % of root alongside size in hover info and file list.
@@ -43,7 +43,8 @@ Features sourced from SpaceMonger (SM), WinDirStat (WDS), and SpaceSniffer (SS).
 - [ ] **Recycle bin cleanup** (WDS). Empty recycle bin from within app.
 - [ ] **Localization/i18n** (SM, WDS). Multi-language support. Language selector in settings.
 - [ ] **Linux support**. egui works cross-platform. Needs platform-specific paths (preferences, file dialog).
+- [ ] **Retake screenshots**. Landing page and GitHub screenshots need updating for v0.6.3 vivid color scheme.
 - [ ] **Scan caching / incremental updates**. Cache previous scan, only rescan changed directories.
-- [ ] **File count in directory headers**. Show number of files/subdirs in header text.
+- [x] **File count in directory headers**. Show number of files/subdirs in header text.
 - [ ] **Rollover highlight options** (SM). Configurable hover highlight style and color.
 - [ ] **Bias slider** (SM). Control horizontal vs vertical split preference in treemap layout. -20 to +20.

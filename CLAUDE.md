@@ -18,11 +18,11 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.6.3)
+## Architecture (v0.7.0)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
-- `src/app.rs` - Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens with images
+- `src/app.rs` - Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens with images, list view, top files view, search/filter
 - `build.rs` - Embeds icon.ico into Windows .exe via winresource
 - `src/camera.rs` - Continuous Camera with bounds clamping: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations. MIN_ZOOM=1.0, MAX_ZOOM=5000
 - `src/scanner.rs` - Recursive directory scanner with progress tracking, elapsed time, scan rate, and cancellation
@@ -47,6 +47,12 @@ cargo run            # run in debug mode
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.
 - **About dialog images:** Icon (64x64) at top, author face (24x24) next to "By tront". Textures lazy-loaded on first About open.
 - **Version check:** Background thread on startup hits GitHub releases API via ureq. Polls result in update loop. Shows "Update available" with download link in About dialog. Fails silently on network errors. Uses `is_newer_version()` for semantic comparison.
+- **View modes:** Treemap (default), List, Top Files. Tabs in toolbar. ViewMode enum switches central panel rendering.
+- **List view:** Sortable directory browser (Name, Size, %, Files columns). Virtual scrolling via show_rows(). Double-click to enter dirs, ".." to go up. Right-click context menu. Breadcrumbs show list_path.
+- **Top Files view:** Top 1000 largest files pre-collected on scan thread (no UI freeze). Virtual scrolling. Search filters by name or path.
+- **Search bar:** Text filter in toolbar. Filters List and Top Files views by filename/path match.
+- **Free space block:** Injected as child node in build_layout. Medium green rgb(60,140,60). Toggle via toolbar button.
+- **Right-click context menu:** Available in both Treemap and List views. Open in Explorer, Copy Path, Delete to Recycle Bin.
 
 ### Navigation
 - Scroll: zoom in/out at cursor
@@ -58,11 +64,11 @@ cargo run            # run in debug mode
 ### Future / TODO
 See `tasks.md` for full backlog (sourced from SpaceMonger, WinDirStat, SpaceSniffer).
 
-**High impact:** Free space block, right-click context menu + delete, file type coloring, multiple views/tabs, duplicate detection, filter/search, largest files list, file tree list view.
+**High impact:** File type coloring, duplicate detection.
 
-**Medium impact:** Cushion shading, rich tooltips, color tagging, filesystem watcher, export/save scans, extension breakdown panel, density slider, scan pause/resume.
+**Medium impact:** Cushion shading, rich tooltips, color tagging, filesystem watcher, export/save scans, extension breakdown panel, density slider.
 
-**Nice to have:** Drag-and-drop folders, CLI, file attributes, percentage display, drive picker, hardlink detection, NTFS ADS, custom cleanups, portable mode, Linux support, i18n.
+**Nice to have:** CLI, file attributes, percentage display, drive picker, hardlink detection, NTFS ADS, custom cleanups, portable mode, Linux support, i18n, retake screenshots.
 
 ### Reference Repos (in SAMPLES/, gitignored)
 - SpaceMonger 1.x source. XOR-rect animation, radix sort.
