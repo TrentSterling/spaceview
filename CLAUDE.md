@@ -18,7 +18,7 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.6.0)
+## Architecture (v0.6.3)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -37,7 +37,8 @@ cargo run            # run in debug mode
 - **Bounded camera:** No nav_stack. Camera with center+zoom, clamped to world bounds. MIN_ZOOM=1.0 (can't zoom past root), MAX_ZOOM=5000 (prevents coordinate overflow). Center clamped so viewport never leaves world_rect.
 - **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering.
 - **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny. Dynamic expand budget (32 during animation, 8 otherwise).
-- **Color themes:** 3 HSL-based themes (Rainbow, Neon, Ocean) using golden angle (137.508 degrees) hue spacing. Selectable via ComboBox. Colors assigned by depth, never change with zoom.
+- **Color themes:** 3 HSL-based themes (Rainbow, Neon, Ocean) using golden angle (137.508 degrees) hue spacing. High lightness (L=0.60-0.65) for vivid SpaceMonger-style colors. Selectable via ComboBox. Colors assigned by depth, never change with zoom.
+- **Color pipeline:** Files use base_rgb directly (vivid). Headers at 80% brightness. Bodies at 35% brightness (colored tint, visible as gap borders). Dynamic text_color_for() on headers picks black or white based on luminance. Directory bodies have explicit 1px dark border stroke.
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans.

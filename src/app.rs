@@ -27,9 +27,9 @@ impl ColorTheme {
     fn base_rgb(self, depth: usize) -> (u8, u8, u8) {
         let golden = (depth as f32 * 137.508) % 360.0;
         match self {
-            ColorTheme::Rainbow => hsl_to_rgb(golden, 0.70, 0.55),
-            ColorTheme::Neon => hsl_to_rgb(golden, 0.90, 0.60),
-            ColorTheme::Ocean => hsl_to_rgb((golden + 180.0) % 360.0, 0.55, 0.50),
+            ColorTheme::Rainbow => hsl_to_rgb(golden, 0.75, 0.65),
+            ColorTheme::Neon => hsl_to_rgb(golden, 0.95, 0.65),
+            ColorTheme::Ocean => hsl_to_rgb((golden + 180.0) % 360.0, 0.60, 0.60),
         }
     }
 
@@ -1140,9 +1140,10 @@ fn render_node(
         let inner = screen_rect.shrink(BORDER_PX);
         let hh = HEADER_PX.min(inner.height());
 
-        // Phase 1: body fill
+        // Phase 1: body fill + border stroke
         let col = body_color(node.color_index, theme);
         painter.rect_filled(inner, 1.0, col);
+        painter.rect_stroke(inner, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(30)), egui::StrokeKind::Outside);
 
         // Phase 2: children in screen-space content area
         if node.children_expanded && !node.children.is_empty() {
@@ -1199,7 +1200,7 @@ fn render_node(
                         egui::Align2::LEFT_TOP,
                         label,
                         egui::FontId::proportional(font_size),
-                        egui::Color32::WHITE,
+                        text_color_for(hdr_col),
                     );
                     if show_size {
                         text_painter.text(
@@ -1207,7 +1208,7 @@ fn render_node(
                             egui::Align2::RIGHT_TOP,
                             size_text,
                             egui::FontId::proportional(font_size - 1.0),
-                            egui::Color32::from_white_alpha(180),
+                            text_color_for(hdr_col).gamma_multiply(0.6),
                         );
                     }
                 }
@@ -1218,7 +1219,7 @@ fn render_node(
         let inner = screen_rect.shrink(1.0);
         let is_free_space = node.name == "<Free Space>";
         let col = if is_free_space {
-            egui::Color32::from_rgb(30, 60, 30)
+            egui::Color32::from_rgb(60, 140, 60)
         } else if node.is_dir {
             dir_color(node.color_index, theme)
         } else {
@@ -1339,20 +1340,19 @@ fn dir_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
 
 fn file_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);
-    let lighten = |c: u8| c.saturating_add(50).min(230);
-    egui::Color32::from_rgb(lighten(r), lighten(g), lighten(b))
+    egui::Color32::from_rgb(r, g, b)
 }
 
 fn header_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);
-    egui::Color32::from_rgb(r.saturating_sub(15), g.saturating_sub(15), b.saturating_sub(15))
+    let darken = |c: u8| (c as f32 * 0.80) as u8;
+    egui::Color32::from_rgb(darken(r), darken(g), darken(b))
 }
 
 fn body_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);
-    let gray = ((r as f32 + g as f32 + b as f32) / 3.0) as u8;
-    let mix = |c: u8| ((c as f32 * 0.3 + gray as f32 * 0.7) * 0.15) as u8;
-    egui::Color32::from_rgb(mix(r), mix(g), mix(b))
+    let dim = |c: u8| (c as f32 * 0.35) as u8;
+    egui::Color32::from_rgb(dim(r), dim(g), dim(b))
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
