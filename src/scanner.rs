@@ -36,6 +36,7 @@ pub struct ScanProgress {
     pub files_scanned: AtomicU64,
     pub bytes_scanned: AtomicU64,
     pub cancel: AtomicBool,
+    pub paused: AtomicBool,
     pub scan_start: Instant,
 }
 
@@ -45,6 +46,7 @@ impl ScanProgress {
             files_scanned: AtomicU64::new(0),
             bytes_scanned: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
             scan_start: Instant::now(),
         }
     }
@@ -75,6 +77,12 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
     for entry in entries {
         if progress.cancel.load(Ordering::Relaxed) {
             return None;
+        }
+        while progress.paused.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if progress.cancel.load(Ordering::Relaxed) {
+                return None;
+            }
         }
 
         let path = entry.path();

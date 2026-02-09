@@ -159,6 +159,9 @@ pub struct SpaceViewApp {
     // Version check
     update_check_receiver: Option<std::sync::mpsc::Receiver<Option<String>>>,
     latest_version: Option<String>,
+
+    // Pending delete confirmation
+    pending_delete: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -261,6 +264,7 @@ impl SpaceViewApp {
             face_texture: None,
             update_check_receiver: Some(update_rx),
             latest_version: None,
+            pending_delete: None,
         }
     }
 
@@ -531,6 +535,49 @@ impl eframe::App for SpaceViewApp {
             }
         }
 
+        // ---- Delete confirmation dialog ----
+        if self.pending_delete.is_some() {
+            let path = self.pending_delete.clone().unwrap();
+            let mut keep_open = true;
+            egui::Window::new("Confirm Delete")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Send to Recycle Bin?");
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(path.to_string_lossy().to_string()).monospace());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete").clicked() {
+                            #[cfg(target_os = "windows")]
+                            {
+                                // Use PowerShell to send to recycle bin
+                                let path_str = path.to_string_lossy().to_string();
+                                let script = format!(
+                                    "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                                    path_str.replace('\'', "''")
+                                );
+                                let _ = std::process::Command::new("powershell")
+                                    .args(["-NoProfile", "-Command", &script])
+                                    .spawn();
+                            }
+                            // Rescan after delete
+                            if let Some(ref scan_path) = self.scan_path {
+                                self.start_scan(scan_path.clone());
+                            }
+                            keep_open = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            keep_open = false;
+                        }
+                    });
+                });
+            if !keep_open {
+                self.pending_delete = None;
+            }
+        }
+
         // ---- Top panel ----
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -577,6 +624,13 @@ impl eframe::App for SpaceViewApp {
                             );
                         }
                         ui.label(text);
+                    }
+                    if let Some(ref prog) = self.scan_progress {
+                        let is_paused = prog.paused.load(Ordering::Relaxed);
+                        let pause_label = if is_paused { "Resume" } else { "Pause" };
+                        if ui.button(pause_label).clicked() {
+                            prog.paused.store(!is_paused, Ordering::Relaxed);
+                        }
                     }
                     if ui.button("Cancel").clicked() {
                         if let Some(ref prog) = self.scan_progress {
@@ -902,6 +956,17 @@ impl eframe::App for SpaceViewApp {
                                 let path = find_path_for_node(root, &info.name, info.size);
                                 if let Some(p) = path {
                                     ctx.copy_text(p.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                        if info.name != "<Free Space>" {
+                            ui.separator();
+                            if ui.button("Delete to Recycle Bin").clicked() {
+                                if let Some(ref root) = self.scan_root {
+                                    let path = find_path_for_node(root, &info.name, info.size);
+                                    if let Some(p) = path {
+                                        self.pending_delete = Some(p);
+                                    }
                                 }
                             }
                         }
