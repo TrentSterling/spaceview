@@ -53,6 +53,96 @@ impl ScanProgress {
     }
 }
 
+/// Live scanning: sends partial tree snapshots after each top-level child directory completes.
+/// Gives ~20-30 live updates for a typical drive (one per top-level dir).
+pub fn scan_directory_live(
+    root: &Path,
+    progress: Arc<ScanProgress>,
+    snapshot_tx: std::sync::mpsc::Sender<FileNode>,
+) -> Option<FileNode> {
+    if progress.cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let mut node = FileNode {
+        name: root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| root.to_string_lossy().to_string()),
+        path: root.to_path_buf(),
+        size: 0,
+        is_dir: true,
+        file_count: 0,
+        modified: 0,
+        children: Vec::new(),
+    };
+
+    let entries: Vec<_> = match std::fs::read_dir(root) {
+        Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
+        Err(_) => return Some(node),
+    };
+
+    for entry in entries {
+        if progress.cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        while progress.paused.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if progress.cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+        }
+
+        let path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if metadata.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "System Volume Information" || name == "$Recycle.Bin" {
+                continue;
+            }
+            if let Some(child) = scan_directory(&path, progress.clone()) {
+                node.size += child.size;
+                node.file_count += child.file_count;
+                if child.size > 0 {
+                    node.children.push(child);
+                }
+                // Sort and send snapshot after each top-level dir
+                node.children.sort_by(|a, b| b.size.cmp(&a.size));
+                node.modified = node.children.iter().map(|c| c.modified).max().unwrap_or(0);
+                let _ = snapshot_tx.send(node.clone());
+            }
+        } else {
+            let file_size = metadata.len();
+            let modified = metadata.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            progress.files_scanned.fetch_add(1, Ordering::Relaxed);
+            progress.bytes_scanned.fetch_add(file_size, Ordering::Relaxed);
+
+            node.size += file_size;
+            node.file_count += 1;
+            node.children.push(FileNode {
+                name: entry.file_name().to_string_lossy().to_string(),
+                path,
+                size: file_size,
+                is_dir: false,
+                file_count: 0,
+                modified,
+                children: Vec::new(),
+            });
+        }
+    }
+
+    node.modified = node.children.iter().map(|c| c.modified).max().unwrap_or(0);
+    node.children.sort_by(|a, b| b.size.cmp(&a.size));
+    Some(node)
+}
+
 pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNode> {
     if progress.cancel.load(Ordering::Relaxed) {
         return None;

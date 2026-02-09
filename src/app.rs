@@ -1,5 +1,5 @@
 use crate::camera::Camera;
-use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory};
+use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory_live};
 use crate::treemap;
 use crate::world_layout::{LayoutNode, WorldLayout};
 use eframe::egui;
@@ -50,12 +50,14 @@ enum ViewMode {
     List,
     LargestFiles,
     Extensions,
+    Duplicates,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ColorMode {
     Depth,
     Age,
+    Extension,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,27 +94,41 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 
 // ===================== Preferences =====================
 
-struct Prefs {
-    hide_about: bool,
-    dark_mode: bool,
+pub struct Prefs {
+    pub hide_about: bool,
+    pub dark_mode: bool,
+    pub window_x: Option<f32>,
+    pub window_y: Option<f32>,
+    pub window_w: Option<f32>,
+    pub window_h: Option<f32>,
 }
 
-fn prefs_path() -> Option<PathBuf> {
+pub fn prefs_path() -> Option<PathBuf> {
     std::env::var("APPDATA").ok().map(|appdata| {
         PathBuf::from(appdata).join("SpaceView").join("prefs.txt")
     })
 }
 
-fn load_prefs() -> Prefs {
-    let mut prefs = Prefs { hide_about: false, dark_mode: true };
+pub fn load_prefs() -> Prefs {
+    let mut prefs = Prefs {
+        hide_about: false,
+        dark_mode: true,
+        window_x: None,
+        window_y: None,
+        window_w: None,
+        window_h: None,
+    };
     if let Some(content) = prefs_path().and_then(|p| std::fs::read_to_string(p).ok()) {
-        // Backwards-compatible: old single-line format "hide_about=true" still works
         for line in content.lines() {
             let line = line.trim();
             if let Some((key, val)) = line.split_once('=') {
                 match key.trim() {
                     "hide_about" => prefs.hide_about = val.trim() == "true",
                     "dark_mode" => prefs.dark_mode = val.trim() == "true",
+                    "window_x" => prefs.window_x = val.trim().parse().ok(),
+                    "window_y" => prefs.window_y = val.trim().parse().ok(),
+                    "window_w" => prefs.window_w = val.trim().parse().ok(),
+                    "window_h" => prefs.window_h = val.trim().parse().ok(),
                     _ => {}
                 }
             }
@@ -126,10 +142,15 @@ fn save_prefs(prefs: &Prefs) {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let content = format!(
+        let mut content = format!(
             "hide_about={}\ndark_mode={}",
             prefs.hide_about, prefs.dark_mode,
         );
+        if let (Some(x), Some(y), Some(w), Some(h)) =
+            (prefs.window_x, prefs.window_y, prefs.window_w, prefs.window_h)
+        {
+            content += &format!("\nwindow_x={}\nwindow_y={}\nwindow_w={}\nwindow_h={}", x, y, w, h);
+        }
         let _ = std::fs::write(p, content);
     }
 }
@@ -141,7 +162,8 @@ pub struct SpaceViewApp {
     scan_root: Option<FileNode>,
     scanning: bool,
     scan_progress: Option<Arc<ScanProgress>>,
-    scan_receiver: Option<std::sync::mpsc::Receiver<(Option<FileNode>, Option<Vec<(String, u64, String)>>, Option<Vec<(String, u64, u64)>>)>>,
+    scan_receiver: Option<std::sync::mpsc::Receiver<(Option<FileNode>, Option<Vec<(String, u64, String)>>, Option<Vec<(String, u64, u64)>>, (u64, u64))>>,
+    snapshot_receiver: Option<std::sync::mpsc::Receiver<FileNode>>,
 
     // Camera + layout
     camera: Camera,
@@ -192,10 +214,17 @@ pub struct SpaceViewApp {
     list_path: Vec<String>,
     cached_largest: Option<Vec<(String, u64, String)>>,
     cached_extensions: Option<Vec<(String, u64, u64)>>, // (extension, total_size, file_count)
+    cached_duplicates: Option<Vec<DuplicateGroup>>,
+    dup_receiver: Option<std::sync::mpsc::Receiver<Vec<DuplicateGroup>>>,
 
     // Color mode
     color_mode: ColorMode,
     time_range: (u64, u64), // (oldest, newest) modified timestamps across all files
+    ext_color_map: std::collections::HashMap<String, usize>, // extension -> color index
+
+    // Window position tracking (saved on exit)
+    last_window_outer_pos: Option<egui::Pos2>,
+    last_window_inner_size: Option<egui::Vec2>,
 }
 
 #[derive(Clone)]
@@ -207,6 +236,12 @@ struct HoveredInfo {
     world_rect: egui::Rect,
     has_children: bool,
     screen_rect: egui::Rect,
+}
+
+#[derive(Clone)]
+struct DuplicateGroup {
+    size: u64,
+    paths: Vec<String>, // full paths of duplicate files
 }
 
 #[derive(Clone)]
@@ -277,6 +312,7 @@ impl SpaceViewApp {
             scanning: false,
             scan_progress: None,
             scan_receiver: None,
+            snapshot_receiver: None,
             camera: Camera::new(egui::pos2(0.5, 0.5), 1.0),
             world_layout: None,
             last_viewport: egui::Rect::NOTHING,
@@ -306,8 +342,13 @@ impl SpaceViewApp {
             list_path: Vec::new(),
             cached_largest: None,
             cached_extensions: None,
+            cached_duplicates: None,
+            dup_receiver: None,
             color_mode: ColorMode::Depth,
             time_range: (0, 0),
+            ext_color_map: std::collections::HashMap::new(),
+            last_window_outer_pos: None,
+            last_window_inner_size: None,
         }
     }
 
@@ -315,16 +356,30 @@ impl SpaceViewApp {
         if let Some(ref prog) = self.scan_progress {
             prog.cancel.store(true, Ordering::Relaxed);
         }
-        self.scan_root = None;
-        self.world_layout = None;
+
+        // Deferred drops: move old data to background thread for deallocation
+        let old_root = self.scan_root.take();
+        let old_layout = self.world_layout.take();
+        let old_largest = self.cached_largest.take();
+        let old_extensions = self.cached_extensions.take();
+        if old_root.is_some() || old_layout.is_some() {
+            std::thread::spawn(move || {
+                drop(old_root);
+                drop(old_layout);
+                drop(old_largest);
+                drop(old_extensions);
+            });
+        }
+
         self.camera = Camera::new(egui::pos2(0.5, 0.5), 1.0);
         self.scanning = true;
+        self.view_mode = ViewMode::Treemap;
         self.depth_context.clear();
         self.hovered_node_info = None;
         self.scan_path = Some(path.clone());
-        self.cached_largest = None;
-        self.cached_extensions = None;
         self.list_path.clear();
+        self.cached_duplicates = None;
+        self.dup_receiver = None;
 
         let progress = Arc::new(ScanProgress::new());
         self.scan_progress = Some(progress.clone());
@@ -332,9 +387,15 @@ impl SpaceViewApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.scan_receiver = Some(rx);
 
+        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+        self.snapshot_receiver = Some(snapshot_rx);
+
         std::thread::spawn(move || {
-            let result = scan_directory(&path, progress);
-            let (largest, extensions) = if let Some(ref root) = result {
+            let result = scan_directory_live(&path, progress, snapshot_tx);
+            let (largest, extensions, time_range) = if let Some(ref root) = result {
+                // Compute time range on scan thread (not UI thread)
+                let time_range = compute_time_range(root);
+
                 // Collect all files once, derive both largest and extension stats
                 let mut all_files: Vec<(String, u64, String)> = Vec::new();
                 collect_all_files(root, &mut all_files);
@@ -359,18 +420,18 @@ impl SpaceViewApp {
                 all_files.sort_by(|a, b| b.1.cmp(&a.1));
                 all_files.truncate(1000);
 
-                (Some(all_files), Some(ext_list))
+                (Some(all_files), Some(ext_list), time_range)
             } else {
-                (None, None)
+                (None, None, (0, 0))
             };
-            let _ = tx.send((result, largest, extensions));
+            let _ = tx.send((result, largest, extensions, time_range));
         });
     }
 
     fn build_layout(&mut self, viewport: egui::Rect) {
         if let Some(ref mut root) = self.scan_root {
-            // Inject free space as a child if enabled
-            if self.show_free_space {
+            // Skip free space injection during live scanning (changes every frame)
+            if !self.scanning && self.show_free_space {
                 if let Some(ref path) = self.scan_path {
                     if let Some(free) = get_free_space(path) {
                         if free > 0 {
@@ -438,6 +499,17 @@ impl SpaceViewApp {
         }
     }
 
+    fn current_prefs(&self) -> Prefs {
+        Prefs {
+            hide_about: self.hide_about_on_start,
+            dark_mode: self.dark_mode,
+            window_x: self.last_window_outer_pos.map(|p| p.x),
+            window_y: self.last_window_outer_pos.map(|p| p.y),
+            window_w: self.last_window_inner_size.map(|s| s.x),
+            window_h: self.last_window_inner_size.map(|s| s.y),
+        }
+    }
+
     fn update_breadcrumbs(&mut self) {
         self.depth_context.clear();
         if let Some(ref layout) = self.world_layout {
@@ -481,6 +553,15 @@ impl eframe::App for SpaceViewApp {
         };
         self.last_time = now;
 
+        // Track window position for save-on-exit
+        let vp_info = ctx.input(|i| i.viewport().clone());
+        if let Some(outer) = vp_info.outer_rect {
+            self.last_window_outer_pos = Some(outer.min);
+        }
+        if let Some(inner) = vp_info.inner_rect {
+            self.last_window_inner_size = Some(inner.size());
+        }
+
         // Handle drag-and-drop folders
         let dropped: Vec<_> = ctx.input(|i| {
             i.raw.dropped_files.iter()
@@ -491,21 +572,61 @@ impl eframe::App for SpaceViewApp {
             self.start_scan(path);
         }
 
-        // Check for scan completion
+        // Check for scan completion and live snapshots
         if self.scanning {
+            // Drain live tree snapshots (keep only the newest)
+            if let Some(ref rx) = self.snapshot_receiver {
+                let mut latest = None;
+                while let Ok(snapshot) = rx.try_recv() {
+                    latest = Some(snapshot);
+                }
+                if let Some(tree) = latest {
+                    self.scan_root = Some(tree);
+                    self.world_layout = None; // Force layout rebuild
+                }
+            }
+
+            // Check for final scan completion
             if let Some(ref rx) = self.scan_receiver {
-                if let Ok((result, largest, extensions)) = rx.try_recv() {
-                    if let Some(ref root) = result {
-                        self.time_range = compute_time_range(root);
-                    }
+                if let Ok((result, largest, extensions, time_range)) = rx.try_recv() {
+                    self.time_range = time_range;
                     self.scan_root = result;
                     self.cached_largest = largest;
+                    // Build extension color map (sorted by size, largest first)
+                    self.ext_color_map.clear();
+                    if let Some(ref exts) = extensions {
+                        for (i, (ext, _, _)) in exts.iter().enumerate() {
+                            self.ext_color_map.insert(ext.clone(), i);
+                        }
+                    }
                     self.cached_extensions = extensions;
                     self.scanning = false;
                     self.scan_receiver = None;
+                    self.snapshot_receiver = None;
+                    self.world_layout = None; // Force final layout rebuild
+
+                    // Start background duplicate detection
+                    self.cached_duplicates = None;
+                    if let Some(ref root) = self.scan_root {
+                        let root_clone = root.clone();
+                        let (dup_tx, dup_rx) = std::sync::mpsc::channel();
+                        self.dup_receiver = Some(dup_rx);
+                        std::thread::spawn(move || {
+                            let dups = find_duplicates(&root_clone);
+                            let _ = dup_tx.send(dups);
+                        });
+                    }
                 }
             }
             ctx.request_repaint();
+        }
+
+        // Check for duplicate detection result
+        if let Some(ref rx) = self.dup_receiver {
+            if let Ok(dups) = rx.try_recv() {
+                self.cached_duplicates = Some(dups);
+                self.dup_receiver = None;
+            }
         }
 
         // Check for version update result
@@ -613,7 +734,7 @@ impl eframe::App for SpaceViewApp {
                     let mut hide = self.hide_about_on_start;
                     if ui.checkbox(&mut hide, "Don't show on startup").changed() {
                         self.hide_about_on_start = hide;
-                        save_prefs(&Prefs { hide_about: hide, dark_mode: self.dark_mode });
+                        save_prefs(&self.current_prefs());
                     }
                     ui.add_space(4.0);
                     ui.vertical_centered(|ui| {
@@ -731,8 +852,8 @@ impl eframe::App for SpaceViewApp {
                     }
                 }
 
-                // Theme selector + dark/light toggle
-                if !self.scanning {
+                // Theme selector + dark/light toggle (show when not scanning or when we have live data)
+                if !self.scanning || self.scan_root.is_some() {
                     ui.separator();
                     let current_label = self.theme.label();
                     egui::ComboBox::from_id_salt("theme_selector")
@@ -745,30 +866,40 @@ impl eframe::App for SpaceViewApp {
                     let mode_label = if self.dark_mode { "Light" } else { "Dark" };
                     if ui.button(mode_label).clicked() {
                         self.dark_mode = !self.dark_mode;
-                        save_prefs(&Prefs { hide_about: self.hide_about_on_start, dark_mode: self.dark_mode });
+                        save_prefs(&self.current_prefs());
                     }
-                    // Color mode toggle
+                    // Color mode toggle (cycles Depth -> Age -> Extension -> Depth)
                     if self.scan_root.is_some() {
                         let color_label = match self.color_mode {
                             ColorMode::Depth => "Age Map",
-                            ColorMode::Age => "Depth",
+                            ColorMode::Age => "By Type",
+                            ColorMode::Extension => "Depth",
                         };
                         if ui.button(color_label).clicked() {
                             self.color_mode = match self.color_mode {
                                 ColorMode::Depth => ColorMode::Age,
-                                ColorMode::Age => ColorMode::Depth,
+                                ColorMode::Age => ColorMode::Extension,
+                                ColorMode::Extension => ColorMode::Depth,
                             };
                         }
                     }
                 }
 
-                // View mode tabs
+                // View mode tabs (only when scan is complete, since List/TopFiles need final data)
                 if self.scan_root.is_some() && !self.scanning {
                     ui.separator();
                     ui.selectable_value(&mut self.view_mode, ViewMode::Treemap, "Map");
                     ui.selectable_value(&mut self.view_mode, ViewMode::List, "List");
                     ui.selectable_value(&mut self.view_mode, ViewMode::LargestFiles, "Top Files");
                     ui.selectable_value(&mut self.view_mode, ViewMode::Extensions, "Types");
+                    let dup_label = if self.cached_duplicates.is_some() {
+                        "Dupes"
+                    } else if self.dup_receiver.is_some() {
+                        "Dupes..."
+                    } else {
+                        "Dupes"
+                    };
+                    ui.selectable_value(&mut self.view_mode, ViewMode::Duplicates, dup_label);
                 }
 
                 // Right-aligned About button + Free Space toggle
@@ -780,6 +911,8 @@ impl eframe::App for SpaceViewApp {
                         ui.add(egui::TextEdit::singleline(&mut self.search_text)
                             .hint_text("Search...")
                             .desired_width(120.0));
+                    }
+                    if self.scan_root.is_some() && !self.scanning {
                         let fs_label = if self.show_free_space { "Hide Free" } else { "Show Free" };
                         if ui.button(fs_label).clicked() {
                             self.show_free_space = !self.show_free_space;
@@ -800,7 +933,7 @@ impl eframe::App for SpaceViewApp {
             });
 
             // Breadcrumb bar
-            if self.scan_root.is_some() && !self.scanning {
+            if self.scan_root.is_some() {
                 ui.horizontal(|ui| {
                     match self.view_mode {
                         ViewMode::Treemap => {
@@ -867,13 +1000,17 @@ impl eframe::App for SpaceViewApp {
                             ui.strong(&self.root_name);
                             ui.label("> File Types");
                         }
+                        ViewMode::Duplicates => {
+                            ui.strong(&self.root_name);
+                            ui.label("> Duplicate Files");
+                        }
                     }
                 });
             }
         });
 
         // ---- Status bar ----
-        if self.scan_root.is_some() && !self.scanning {
+        if self.scan_root.is_some() {
             egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!(
@@ -918,6 +1055,10 @@ impl eframe::App for SpaceViewApp {
                         ui.colored_label(egui::Color32::from_rgb(220, 220, 50), "Mid");
                         ui.label("-");
                         ui.colored_label(egui::Color32::from_rgb(60, 220, 80), "New");
+                    }
+                    if self.color_mode == ColorMode::Extension {
+                        ui.separator();
+                        ui.label("Color: by file type");
                     }
                 });
             });
@@ -969,7 +1110,8 @@ impl eframe::App for SpaceViewApp {
                 return;
             }
 
-            if self.scanning {
+            // If scanning but no data yet, show spinner
+            if self.scanning && self.scan_root.is_none() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() / 3.0);
                     ui.heading("Scanning...");
@@ -992,6 +1134,7 @@ impl eframe::App for SpaceViewApp {
                 });
                 return;
             }
+            // If scanning with data, fall through to render the treemap live
 
             let viewport = ui.available_rect_before_wrap();
             self.last_viewport = viewport;
@@ -1168,7 +1311,7 @@ impl eframe::App for SpaceViewApp {
 
             // Walk the layout tree and draw visible nodes
             if let Some(ref layout) = self.world_layout {
-                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range);
+                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range, &self.ext_color_map);
             }
 
             // 5. Hit test for hover (screen-space, skip while dragging)
@@ -1196,6 +1339,25 @@ impl eframe::App for SpaceViewApp {
                     }
                 } else {
                     self.hovered_node_info = None;
+                }
+            }
+
+            // Rich tooltip on hover
+            if let Some(ref info) = self.hovered_node_info {
+                if response.hovered() {
+                    let pct = if self.root_size > 0 {
+                        (info.size as f64 / self.root_size as f64) * 100.0
+                    } else { 0.0 };
+                    let mut tip = format!("{}\n{} ({:.2}%)", info.name, format_size(info.size), pct);
+                    if info.is_dir {
+                        tip += &format!("\n{} files", format_count(info.file_count));
+                    }
+                    if let Some(ref root) = self.scan_root {
+                        if let Some(p) = find_path_for_node(root, &info.name, info.size) {
+                            tip += &format!("\n{}", p.to_string_lossy());
+                        }
+                    }
+                    response.clone().on_hover_text(tip);
                 }
             }
 
@@ -1615,8 +1777,95 @@ impl eframe::App for SpaceViewApp {
                 }
             }
 
+            ViewMode::Duplicates => {
+                if self.dup_receiver.is_some() && self.cached_duplicates.is_none() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 3.0);
+                        ui.heading("Analyzing duplicates...");
+                        ui.spinner();
+                    });
+                } else if let Some(ref dups) = self.cached_duplicates {
+                    let total_waste: u64 = dups.iter()
+                        .map(|g| g.size * (g.paths.len() as u64 - 1))
+                        .sum();
+                    let total_groups = dups.len();
+
+                    // Summary header
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "{} duplicate groups. {} wasted.",
+                            format_count(total_groups as u64),
+                            format_size(total_waste),
+                        ));
+                    });
+                    ui.separator();
+
+                    let mut filtered: Vec<&DuplicateGroup> = dups.iter().collect();
+                    if !self.search_text.is_empty() {
+                        let q = self.search_text.to_lowercase();
+                        filtered.retain(|g| g.paths.iter().any(|p| p.to_lowercase().contains(&q)));
+                    }
+
+                    if filtered.is_empty() && !self.search_text.is_empty() {
+                        ui.label("No matching duplicates.");
+                    } else {
+                        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                            for (gi, group) in filtered.iter().enumerate() {
+                                let waste = group.size * (group.paths.len() as u64 - 1);
+                                let ci = gi % 20;
+                                let (r, g, b) = self.theme.base_rgb(ci);
+                                let col = egui::Color32::from_rgb(r, g, b);
+
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(col, format!(
+                                        "{} x {} (wastes {})",
+                                        group.paths.len(),
+                                        format_size(group.size),
+                                        format_size(waste),
+                                    ));
+                                });
+
+                                for path in &group.paths {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(16.0);
+                                        let resp = ui.add(egui::Label::new(
+                                            egui::RichText::new(path).weak()
+                                        ).sense(egui::Sense::click()));
+                                        resp.context_menu(|ui| {
+                                            if ui.button("Open in Explorer").clicked() {
+                                                let _ = std::process::Command::new("explorer")
+                                                    .arg("/select,")
+                                                    .arg(path)
+                                                    .spawn();
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("Copy Path").clicked() {
+                                                ctx.copy_text(path.clone());
+                                                ui.close_menu();
+                                            }
+                                            if ui.button("Delete to Recycle Bin").clicked() {
+                                                self.pending_delete = Some(PathBuf::from(path));
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    });
+                                }
+                                ui.add_space(4.0);
+                                ui.separator();
+                            }
+                        });
+                    }
+                } else {
+                    ui.label("No duplicate data available. Scan a drive first.");
+                }
+            }
+
             } // match self.view_mode
         });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        save_prefs(&self.current_prefs());
     }
 }
 
@@ -1640,10 +1889,11 @@ fn render_nodes(
     theme: ColorTheme,
     color_mode: ColorMode,
     time_range: (u64, u64),
+    ext_colors: &std::collections::HashMap<String, usize>,
 ) {
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range);
+        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors);
     }
 }
 
@@ -1657,6 +1907,7 @@ fn render_node(
     theme: ColorTheme,
     color_mode: ColorMode,
     time_range: (u64, u64),
+    ext_colors: &std::collections::HashMap<String, usize>,
 ) {
     // Viewport culling
     if !screen_rect.intersects(viewport) {
@@ -1673,7 +1924,7 @@ fn render_node(
 
         // Phase 1: body fill + border stroke
         let col = match color_mode {
-            ColorMode::Depth => body_color(node.color_index, theme),
+            ColorMode::Depth | ColorMode::Extension => body_color(node.color_index, theme),
             ColorMode::Age => age_body_color(node.modified, time_range),
         };
         painter.rect_filled(inner, 1.0, col);
@@ -1699,7 +1950,7 @@ fn render_node(
                         egui::pos2(tr.x, tr.y),
                         egui::vec2(tr.w, tr.h),
                     );
-                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range);
+                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range, ext_colors);
                 }
             }
         }
@@ -1710,7 +1961,7 @@ fn render_node(
             let clipped = header.intersect(viewport);
             if clipped.width() > 0.0 && clipped.height() > 0.0 {
                 let hdr_col = match color_mode {
-                    ColorMode::Depth => header_color(node.color_index, theme),
+                    ColorMode::Depth | ColorMode::Extension => header_color(node.color_index, theme),
                     ColorMode::Age => age_header_color(node.modified, time_range),
                 };
                 painter.rect_filled(clipped, 1.0, hdr_col);
@@ -1764,9 +2015,18 @@ fn render_node(
                     else { file_color(node.color_index, theme) }
                 }
                 ColorMode::Age => age_color(node.modified, time_range),
+                ColorMode::Extension => {
+                    if node.is_dir { dir_color(node.color_index, theme) }
+                    else { ext_file_color(&node.name, ext_colors, theme) }
+                }
             }
         };
         painter.rect_filled(inner, 1.0, col);
+
+        // Cushion shading: darken edges for 3D effect
+        if inner.width() > 6.0 && inner.height() > 6.0 {
+            draw_cushion(painter, inner);
+        }
 
         if inner.width() > 35.0 && inner.height() > 14.0 {
             let text_clip = inner.intersect(viewport);
@@ -1950,6 +2210,99 @@ fn compute_time_range_recursive(node: &FileNode, min_t: &mut u64, max_t: &mut u6
     }
 }
 
+/// Tiered duplicate detection: group by size, then partial hash (first 4KB), then full hash.
+fn find_duplicates(root: &FileNode) -> Vec<DuplicateGroup> {
+    use std::collections::HashMap;
+
+    // Step 1: Collect all files with paths, grouped by size
+    let mut by_size: HashMap<u64, Vec<String>> = HashMap::new();
+    collect_file_paths(root, &mut by_size);
+
+    // Filter to sizes with 2+ files (potential duplicates). Skip tiny files.
+    let candidates: Vec<(u64, Vec<String>)> = by_size.into_iter()
+        .filter(|(size, paths)| paths.len() >= 2 && *size >= 1024)
+        .collect();
+
+    // Step 2: For each size group, hash first 4KB
+    let mut results: Vec<DuplicateGroup> = Vec::new();
+
+    for (size, paths) in candidates {
+        let mut by_partial: HashMap<u64, Vec<String>> = HashMap::new();
+        for path in &paths {
+            if let Ok(hash) = hash_file_partial(path) {
+                by_partial.entry(hash).or_default().push(path.clone());
+            }
+        }
+
+        // Step 3: For partial-hash matches with 2+ files, do full hash
+        for (_phash, partial_group) in by_partial {
+            if partial_group.len() < 2 {
+                continue;
+            }
+            // For small files (<=4KB), partial hash IS the full hash
+            if size <= 4096 {
+                results.push(DuplicateGroup { size, paths: partial_group });
+                continue;
+            }
+
+            let mut by_full: HashMap<u64, Vec<String>> = HashMap::new();
+            for path in &partial_group {
+                if let Ok(hash) = hash_file_full(path) {
+                    by_full.entry(hash).or_default().push(path.clone());
+                }
+            }
+            for (_fhash, full_group) in by_full {
+                if full_group.len() >= 2 {
+                    results.push(DuplicateGroup { size, paths: full_group });
+                }
+            }
+        }
+    }
+
+    // Sort by wasted space (size * (count-1)) descending
+    results.sort_by(|a, b| {
+        let waste_a = a.size * (a.paths.len() as u64 - 1);
+        let waste_b = b.size * (b.paths.len() as u64 - 1);
+        waste_b.cmp(&waste_a)
+    });
+
+    results
+}
+
+fn collect_file_paths(node: &FileNode, by_size: &mut std::collections::HashMap<u64, Vec<String>>) {
+    for child in &node.children {
+        if child.is_dir {
+            collect_file_paths(child, by_size);
+        } else if child.name != "<Free Space>" && child.size > 0 {
+            by_size.entry(child.size).or_default()
+                .push(child.path.to_string_lossy().to_string());
+        }
+    }
+}
+
+fn hash_file_partial(path: &str) -> std::io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0u8; 4096];
+    let n = std::io::Read::read(&mut file, &mut buf)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    buf[..n].hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+fn hash_file_full(path: &str) -> std::io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)?;
+        if n == 0 { break; }
+        buf[..n].hash(&mut hasher);
+    }
+    Ok(hasher.finish())
+}
+
 fn collect_all_files(node: &FileNode, files: &mut Vec<(String, u64, String)>) {
     for child in &node.children {
         if child.is_dir {
@@ -1984,14 +2337,38 @@ fn body_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     egui::Color32::from_rgb(dim(r), dim(g), dim(b))
 }
 
+/// Get the color index for a file based on its extension.
+fn ext_color_index(name: &str, ext_colors: &std::collections::HashMap<String, usize>) -> Option<usize> {
+    let ext = name.rsplit('.').next()
+        .filter(|e| e.len() < 10 && *e != name)
+        .map(|e| format!(".{}", e.to_lowercase()))
+        .unwrap_or_else(|| "(no ext)".to_string());
+    ext_colors.get(&ext).copied()
+}
+
+/// File color for extension mode. Uses theme colors indexed by extension rank.
+fn ext_file_color(name: &str, ext_colors: &std::collections::HashMap<String, usize>, theme: ColorTheme) -> egui::Color32 {
+    if let Some(ci) = ext_color_index(name, ext_colors) {
+        let (r, g, b) = theme.base_rgb(ci);
+        egui::Color32::from_rgb(r, g, b)
+    } else {
+        egui::Color32::from_rgb(128, 128, 128)
+    }
+}
+
 /// Map a file's modified timestamp to a red-to-green gradient.
 /// Old files = red/warm. Recent files = green/cool.
 fn age_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
     if modified == 0 || time_range.0 >= time_range.1 {
         return egui::Color32::from_rgb(128, 128, 128); // unknown = gray
     }
-    // Normalize to 0.0 (oldest) .. 1.0 (newest)
-    let t = ((modified - time_range.0) as f64) / ((time_range.1 - time_range.0) as f64);
+    // Log scale: spreads out recent files instead of clustering at green.
+    // age_secs = how old this file is (0 = newest). Log compresses the old end
+    // and expands the new end, so "1 week ago" vs "1 month ago" is visible
+    // even when the oldest file is 15 years old.
+    let age_secs = (time_range.1 - modified) as f64;
+    let max_age = (time_range.1 - time_range.0) as f64;
+    let t = 1.0 - (age_secs + 1.0).ln() / (max_age + 1.0).ln();
     let t = t.clamp(0.0, 1.0) as f32;
     // Red (old) -> Yellow (mid) -> Green (new)
     let (r, g, b) = if t < 0.5 {
@@ -2018,6 +2395,35 @@ fn age_header_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
     let col = age_color(modified, time_range);
     let darken = |c: u8| (c as f32 * 0.80) as u8;
     egui::Color32::from_rgb(darken(col.r()), darken(col.g()), darken(col.b()))
+}
+
+/// Draw cushion shading: darken edges to create a 3D raised effect.
+fn draw_cushion(painter: &egui::Painter, rect: egui::Rect) {
+    let w = (rect.width() * 0.15).min(6.0).max(1.0);
+    let h = (rect.height() * 0.15).min(6.0).max(1.0);
+    let dark = egui::Color32::from_rgba_premultiplied(0, 0, 0, 30);
+    let light = egui::Color32::from_rgba_premultiplied(255, 255, 255, 18);
+
+    // Top highlight
+    painter.rect_filled(
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + h)),
+        0.0, light,
+    );
+    // Left highlight
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + h), egui::pos2(rect.min.x + w, rect.max.y)),
+        0.0, light,
+    );
+    // Bottom shadow
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - h), rect.max),
+        0.0, dark,
+    );
+    // Right shadow
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(rect.max.x - w, rect.min.y), egui::pos2(rect.max.x, rect.max.y - h)),
+        0.0, dark,
+    );
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
