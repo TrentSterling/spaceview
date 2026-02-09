@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.2-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-blue" />
   <img alt="Rust" src="https://img.shields.io/badge/rust-2021-orange" />
   <img alt="egui" src="https://img.shields.io/badge/egui-0.31-green" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey" />
@@ -35,12 +35,16 @@
 
 ## Features
 
-- **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Spot space hogs at a glance.
-- **Instant Navigation.** Scroll to zoom, double-click to dive in, right-click to zoom out. Smooth animated transitions.
-- **3 Color Themes.** Rainbow, Heatmap, and Pastel. Colors assigned by depth for instant visual hierarchy.
-- **Live Scan Progress.** Real-time file count, total size, and scan rate. See elapsed time and files/sec as it runs.
-- **Breadcrumb Trail.** Always know where you are in the directory tree. Click any crumb to jump back.
-- **Tiny Binary.** ~3.6 MB standalone .exe. No installer, no runtime dependencies. Just download and run.
+- **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Vivid SpaceMonger-style colors.
+- **3 View Modes.** Map (treemap), List (sortable directory browser), Top Files (1000 largest files). Switch instantly.
+- **Search/Filter.** Find files by name or path across List and Top Files views.
+- **Instant Navigation.** Scroll to zoom, double-click to dive in, right-click for context menu. Smooth animated transitions.
+- **Right-Click Context Menu.** Open in Explorer, Copy Path, Delete to Recycle Bin. Works in both Map and List views.
+- **3 Color Themes.** Rainbow, Neon, Ocean. Golden angle hue spacing for vivid, readable colors. Dark/light mode.
+- **Free Space Block.** See how much disk space is free vs used. Toggle on/off.
+- **Live Scan Progress.** Real-time file count, total size, scan rate, pause/resume.
+- **Drag and Drop.** Drop a folder onto the window to scan it.
+- **Tiny Binary.** Standalone .exe. No installer, no runtime dependencies. Just download and run.
 
 ## Quick Start
 
