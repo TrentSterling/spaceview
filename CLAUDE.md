@@ -55,12 +55,13 @@ cargo run            # run in debug mode
 - Breadcrumbs: built from ancestor_chain() at camera center
 
 ### Future / TODO
-- Multiple views as tabs/pages (pie chart, file list, extension breakdown). Inspired by WinDirStat.
-- Linux support. egui already works cross-platform, just needs testing and platform-specific paths (preferences, file dialog).
-- File type coloring by extension.
-- Right-click context menu (open in explorer, delete).
-- Scan caching / incremental updates.
-- File count display in directory headers.
+See `tasks.md` for full backlog (sourced from SpaceMonger, WinDirStat, SpaceSniffer).
+
+**High impact:** Free space block, right-click context menu + delete, file type coloring, multiple views/tabs, duplicate detection, filter/search, largest files list, file tree list view.
+
+**Medium impact:** Cushion shading, rich tooltips, color tagging, filesystem watcher, export/save scans, extension breakdown panel, density slider, scan pause/resume.
+
+**Nice to have:** Drag-and-drop folders, CLI, file attributes, percentage display, drive picker, hardlink detection, NTFS ADS, custom cleanups, portable mode, Linux support, i18n.
 
 ### Reference Repos (in SAMPLES/, gitignored)
 - SpaceMonger 1.x source. XOR-rect animation, radix sort.
