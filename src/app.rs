@@ -49,6 +49,7 @@ enum ViewMode {
     Treemap,
     List,
     LargestFiles,
+    Extensions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,7 +141,7 @@ pub struct SpaceViewApp {
     scan_root: Option<FileNode>,
     scanning: bool,
     scan_progress: Option<Arc<ScanProgress>>,
-    scan_receiver: Option<std::sync::mpsc::Receiver<(Option<FileNode>, Option<Vec<(String, u64, String)>>)>>,
+    scan_receiver: Option<std::sync::mpsc::Receiver<(Option<FileNode>, Option<Vec<(String, u64, String)>>, Option<Vec<(String, u64, u64)>>)>>,
 
     // Camera + layout
     camera: Camera,
@@ -190,6 +191,7 @@ pub struct SpaceViewApp {
     list_sort_asc: bool,
     list_path: Vec<String>,
     cached_largest: Option<Vec<(String, u64, String)>>,
+    cached_extensions: Option<Vec<(String, u64, u64)>>, // (extension, total_size, file_count)
 
     // Color mode
     color_mode: ColorMode,
@@ -303,6 +305,7 @@ impl SpaceViewApp {
             list_sort_asc: false,
             list_path: Vec::new(),
             cached_largest: None,
+            cached_extensions: None,
             color_mode: ColorMode::Depth,
             time_range: (0, 0),
         }
@@ -320,6 +323,7 @@ impl SpaceViewApp {
         self.hovered_node_info = None;
         self.scan_path = Some(path.clone());
         self.cached_largest = None;
+        self.cached_extensions = None;
         self.list_path.clear();
 
         let progress = Arc::new(ScanProgress::new());
@@ -330,17 +334,36 @@ impl SpaceViewApp {
 
         std::thread::spawn(move || {
             let result = scan_directory(&path, progress);
-            // Pre-collect largest files while we already have the tree (no clone needed)
-            let largest = if let Some(ref root) = result {
-                let mut files: Vec<(String, u64, String)> = Vec::new();
-                collect_all_files(root, &mut files);
-                files.sort_by(|a, b| b.1.cmp(&a.1));
-                files.truncate(1000);
-                Some(files)
+            let (largest, extensions) = if let Some(ref root) = result {
+                // Collect all files once, derive both largest and extension stats
+                let mut all_files: Vec<(String, u64, String)> = Vec::new();
+                collect_all_files(root, &mut all_files);
+
+                // Extension stats from all files
+                let mut ext_map: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+                for (name, size, _) in &all_files {
+                    let ext = name.rsplit('.').next()
+                        .filter(|e| e.len() < 10 && *e != name.as_str())
+                        .map(|e| format!(".{}", e.to_lowercase()))
+                        .unwrap_or_else(|| "(no ext)".to_string());
+                    let entry = ext_map.entry(ext).or_insert((0, 0));
+                    entry.0 += size;
+                    entry.1 += 1;
+                }
+                let mut ext_list: Vec<(String, u64, u64)> = ext_map.into_iter()
+                    .map(|(ext, (size, count))| (ext, size, count))
+                    .collect();
+                ext_list.sort_by(|a, b| b.1.cmp(&a.1));
+
+                // Largest 1000 files
+                all_files.sort_by(|a, b| b.1.cmp(&a.1));
+                all_files.truncate(1000);
+
+                (Some(all_files), Some(ext_list))
             } else {
-                None
+                (None, None)
             };
-            let _ = tx.send((result, largest));
+            let _ = tx.send((result, largest, extensions));
         });
     }
 
@@ -471,12 +494,13 @@ impl eframe::App for SpaceViewApp {
         // Check for scan completion
         if self.scanning {
             if let Some(ref rx) = self.scan_receiver {
-                if let Ok((result, largest)) = rx.try_recv() {
+                if let Ok((result, largest, extensions)) = rx.try_recv() {
                     if let Some(ref root) = result {
                         self.time_range = compute_time_range(root);
                     }
                     self.scan_root = result;
                     self.cached_largest = largest;
+                    self.cached_extensions = extensions;
                     self.scanning = false;
                     self.scan_receiver = None;
                 }
@@ -744,6 +768,7 @@ impl eframe::App for SpaceViewApp {
                     ui.selectable_value(&mut self.view_mode, ViewMode::Treemap, "Map");
                     ui.selectable_value(&mut self.view_mode, ViewMode::List, "List");
                     ui.selectable_value(&mut self.view_mode, ViewMode::LargestFiles, "Top Files");
+                    ui.selectable_value(&mut self.view_mode, ViewMode::Extensions, "Types");
                 }
 
                 // Right-aligned About button + Free Space toggle
@@ -837,6 +862,10 @@ impl eframe::App for SpaceViewApp {
                         ViewMode::LargestFiles => {
                             ui.strong(&self.root_name);
                             ui.label("> Largest Files");
+                        }
+                        ViewMode::Extensions => {
+                            ui.strong(&self.root_name);
+                            ui.label("> File Types");
                         }
                     }
                 });
@@ -1214,7 +1243,62 @@ impl eframe::App for SpaceViewApp {
                 );
             }
 
-            // 8. Request repaint if camera is moving
+            // 8. Zoom minimap (bottom-right corner when zoomed in)
+            if self.camera.zoom > 1.5 {
+                if let Some(ref layout) = self.world_layout {
+                    let mini_w = 180.0f32;
+                    let world_aspect = layout.world_rect.height() / layout.world_rect.width();
+                    let mini_h = mini_w * world_aspect;
+                    let margin = 8.0;
+                    let mini_rect = egui::Rect::from_min_size(
+                        egui::pos2(viewport.max.x - mini_w - margin, viewport.max.y - mini_h - margin),
+                        egui::vec2(mini_w, mini_h),
+                    );
+
+                    // Background
+                    painter.rect_filled(mini_rect, 4.0, egui::Color32::from_rgba_premultiplied(20, 20, 20, 200));
+
+                    // Render simplified treemap into minimap
+                    let mini_camera = Camera::new(
+                        egui::pos2(
+                            layout.world_rect.center().x,
+                            layout.world_rect.center().y,
+                        ),
+                        1.0,
+                    );
+                    render_minimap_nodes(&painter, &layout.root_nodes, &mini_camera, mini_rect, theme);
+
+                    // Draw viewport indicator
+                    let vp_world_min = self.camera.screen_to_world(viewport.min, viewport);
+                    let vp_world_max = self.camera.screen_to_world(viewport.max, viewport);
+                    let to_mini = |world_pos: egui::Pos2| -> egui::Pos2 {
+                        let nx = (world_pos.x - layout.world_rect.min.x) / layout.world_rect.width();
+                        let ny = (world_pos.y - layout.world_rect.min.y) / layout.world_rect.height();
+                        egui::pos2(
+                            mini_rect.min.x + nx * mini_rect.width(),
+                            mini_rect.min.y + ny * mini_rect.height(),
+                        )
+                    };
+                    let vp_mini = egui::Rect::from_min_max(
+                        to_mini(vp_world_min),
+                        to_mini(vp_world_max),
+                    ).intersect(mini_rect);
+                    painter.rect_stroke(
+                        vp_mini, 0.0,
+                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::StrokeKind::Outside,
+                    );
+
+                    // Border
+                    painter.rect_stroke(
+                        mini_rect, 4.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            }
+
+            // 9. Request repaint if camera is moving
             if camera_moving {
                 ctx.request_repaint();
             }
@@ -1455,6 +1539,82 @@ impl eframe::App for SpaceViewApp {
                 } // else if cached_largest
             }
 
+            ViewMode::Extensions => {
+                if let Some(ref ext_data) = self.cached_extensions {
+                    let total_size = self.root_size.max(1);
+                    let theme = self.theme;
+
+                    let mut filtered: Vec<&(String, u64, u64)> = ext_data.iter().collect();
+                    if !self.search_text.is_empty() {
+                        let q = self.search_text.to_lowercase();
+                        filtered.retain(|e| e.0.to_lowercase().contains(&q));
+                    }
+
+                    if filtered.is_empty() {
+                        ui.label("No matching file types.");
+                    } else {
+                        // Render as a treemap of extensions
+                        let ext_rect = ui.available_rect_before_wrap();
+                        let painter = ui.painter_at(ext_rect);
+                        let _response = ui.allocate_rect(ext_rect, egui::Sense::hover());
+
+                        let sizes: Vec<f64> = filtered.iter().map(|e| e.1 as f64).collect();
+                        let rects = treemap::layout(
+                            ext_rect.min.x, ext_rect.min.y,
+                            ext_rect.width(), ext_rect.height(),
+                            &sizes,
+                        );
+
+                        for tr in &rects {
+                            let ext = &filtered[tr.index];
+                            let rect = egui::Rect::from_min_size(
+                                egui::pos2(tr.x, tr.y),
+                                egui::vec2(tr.w, tr.h),
+                            );
+                            let inner = rect.shrink(1.0);
+                            let ci = tr.index;
+                            let (r, g, b) = theme.base_rgb(ci);
+                            let col = egui::Color32::from_rgb(r, g, b);
+                            painter.rect_filled(inner, 2.0, col);
+
+                            // Draw text if block is big enough
+                            if inner.width() > 40.0 && inner.height() > 18.0 {
+                                let text_clip = inner.intersect(ext_rect);
+                                let text_painter = painter.with_clip_rect(text_clip);
+                                let text_col = text_color_for(col);
+                                let pct = (ext.1 as f64 / total_size as f64) * 100.0;
+
+                                // Extension name
+                                let font_size = (inner.height() * 0.3).clamp(11.0, 24.0);
+                                let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
+                                let label = truncate_str(&ext.0, max_chars);
+                                text_painter.text(
+                                    inner.min + egui::vec2(4.0, 4.0),
+                                    egui::Align2::LEFT_TOP,
+                                    label,
+                                    egui::FontId::proportional(font_size),
+                                    text_col,
+                                );
+
+                                // Size and count
+                                if inner.height() > 36.0 {
+                                    let info = format!("{} ({:.1}%, {} files)",
+                                        format_size(ext.1), pct, format_count(ext.2));
+                                    let info_size = (font_size * 0.7).clamp(9.0, 14.0);
+                                    text_painter.text(
+                                        inner.min + egui::vec2(4.0, font_size + 6.0),
+                                        egui::Align2::LEFT_TOP,
+                                        info,
+                                        egui::FontId::proportional(info_size),
+                                        text_col.gamma_multiply(0.7),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             } // match self.view_mode
         });
     }
@@ -1636,6 +1796,55 @@ fn render_node(
                 }
             }
         }
+    }
+}
+
+// ===================== Minimap Rendering =====================
+
+/// Simplified treemap render for the minimap. Just colored blocks, no text.
+fn render_minimap_nodes(
+    painter: &egui::Painter,
+    nodes: &[LayoutNode],
+    camera: &Camera,
+    viewport: egui::Rect,
+    theme: ColorTheme,
+) {
+    for node in nodes {
+        let screen_rect = camera.world_to_screen(node.world_rect, viewport);
+        render_minimap_node(painter, node, screen_rect, viewport, theme);
+    }
+}
+
+fn render_minimap_node(
+    painter: &egui::Painter,
+    node: &LayoutNode,
+    screen_rect: egui::Rect,
+    viewport: egui::Rect,
+    theme: ColorTheme,
+) {
+    if !screen_rect.intersects(viewport) { return; }
+    if screen_rect.width() < 1.0 || screen_rect.height() < 1.0 { return; }
+
+    if node.is_dir && node.has_children && node.children_expanded && !node.children.is_empty() {
+        // Just recurse into children
+        let inner = screen_rect.shrink(0.5);
+        let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
+        let rects = treemap::layout(inner.min.x, inner.min.y, inner.width(), inner.height(), &sizes);
+        for tr in &rects {
+            let child_rect = egui::Rect::from_min_size(
+                egui::pos2(tr.x, tr.y), egui::vec2(tr.w, tr.h),
+            );
+            render_minimap_node(painter, &node.children[tr.index], child_rect, viewport, theme);
+        }
+    } else {
+        // Leaf or unexpanded: solid color block
+        let col = if node.name == "<Free Space>" {
+            egui::Color32::from_rgb(60, 140, 60)
+        } else {
+            let (r, g, b) = theme.base_rgb(node.color_index);
+            egui::Color32::from_rgb(r, g, b)
+        };
+        painter.rect_filled(screen_rect, 0.0, col);
     }
 }
 
