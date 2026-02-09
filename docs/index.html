@@ -9,7 +9,7 @@
     <!-- OpenGraph -->
     <meta property="og:title" content="SpaceView - Disk Space Visualizer">
     <meta property="og:description" content="A fast, visual disk space analyzer inspired by SpaceMonger. Built with Rust + egui.">
-    <meta property="og:image" content="https://tront.xyz/SpaceView/assets/screenshot.png">
+    <meta property="og:image" content="https://tront.xyz/SpaceView/assets/screenshot-neon.png">
     <meta property="og:url" content="https://tront.xyz/SpaceView/">
     <meta property="og:type" content="website">
 
@@ -17,7 +17,7 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="SpaceView - Disk Space Visualizer">
     <meta name="twitter:description" content="A fast, visual disk space analyzer inspired by SpaceMonger. Built with Rust + egui.">
-    <meta name="twitter:image" content="https://tront.xyz/SpaceView/assets/screenshot.png">
+    <meta name="twitter:image" content="https://tront.xyz/SpaceView/assets/screenshot-neon.png">
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="assets/icon.svg">
@@ -420,17 +420,21 @@
                 View Source
             </a>
         </div>
-        <div class="version-badge">v0.10.0 - 3.6 MB standalone .exe</div>
+        <div class="version-badge">v0.11.0 - 3.6 MB standalone .exe</div>
     </section>
 
     <section class="screenshot">
         <div class="screenshot-frame">
-            <img src="assets/screenshot.png" alt="SpaceView scanning a drive" onclick="openLightbox(this)">
-            <p style="margin-top: 12px;">Scanning a 1.37 TB drive. Every rectangle is a file or folder, sized proportionally.</p>
+            <img src="assets/screenshot-neon.png" alt="SpaceView treemap with Neon theme" onclick="openLightbox(this)">
+            <p style="margin-top: 12px;">Scanning a 530 GB drive with Neon colors. Every rectangle is a file or folder, sized proportionally.</p>
         </div>
         <div class="screenshot-frame" style="margin-top: 24px;">
-            <img src="assets/screenshot-about.png" alt="SpaceView About dialog" onclick="openLightbox(this)">
-            <p style="margin-top: 12px;">Built-in About dialog with keyboard shortcut reference.</p>
+            <img src="assets/screenshot-ocean.png" alt="SpaceView treemap with Ocean theme" onclick="openLightbox(this)">
+            <p style="margin-top: 12px;">Full C:\ drive scan. Steam games, Unity installs, project files. All visible at once.</p>
+        </div>
+        <div class="screenshot-frame" style="margin-top: 24px;">
+            <img src="assets/screenshot-types.png" alt="SpaceView Types view" onclick="openLightbox(this)">
+            <p style="margin-top: 12px;">Types view. See which file extensions consume the most space across your entire drive.</p>
         </div>
     </section>
 
@@ -486,6 +490,16 @@
                 <div class="icon">&#x1F4AC;</div>
                 <h3>Rich Tooltips</h3>
                 <p>Hover any block to see name, size, percentage, file count, and full path. Cushion shading for 3D depth.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x1F4BE;</div>
+                <h3>Drive Picker</h3>
+                <p>Visual drive cards with capacity bars. See free space at a glance. Click any drive to scan. No more typing paths.</p>
+            </div>
+            <div class="feature-card">
+                <div class="icon">&#x1F4CA;</div>
+                <h3>Extension Breakdown</h3>
+                <p>Side panel listing every file type by size. Click an extension to highlight matching files in the treemap. Filter by type instantly.</p>
             </div>
         </div>
     </section>

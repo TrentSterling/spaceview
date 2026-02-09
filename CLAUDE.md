@@ -18,11 +18,11 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.10.0)
+## Architecture (v0.11.0)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
-- `src/app.rs` - Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens with images, list view, top files view, search/filter, live scan visualization, duplicate detection, extension coloring, cushion shading, rich tooltips
+- `src/app.rs` - Main UI: SpaceViewApp, continuous camera, screen-space treemap rendering, screen-space hit testing, input handling, themes, welcome/about screens with images, list view, top files view, search/filter, live scan visualization, duplicate detection, extension coloring, cushion shading, rich tooltips, extension breakdown panel, drive picker
 - `build.rs` - Embeds icon.ico into Windows .exe via winresource
 - `src/camera.rs` - Continuous Camera with bounds clamping: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations. MIN_ZOOM=1.0, MAX_ZOOM=5000
 - `src/scanner.rs` - Recursive directory scanner with progress tracking, elapsed time, scan rate, cancellation, and live snapshot channel (scan_directory_live)
@@ -42,7 +42,7 @@ cargo run            # run in debug mode
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans.
-- **Welcome screen:** Always shows quickhelp (version, description, shortcuts, Open Folder button). No hide option.
+- **Welcome screen:** Shows drive cards with capacity bars (blue/yellow/red by usage), name, type, filesystem. Click a drive to scan. "Open Folder..." button below as fallback. Keyboard shortcuts at the bottom.
 - **About dialog:** Auto-opens on first launch. Escape closes it. "Don't show on startup" checkbox persisted to `%APPDATA%/SpaceView/prefs.txt` (multi-key format). Manual toggle via About button always works.
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.
 - **About dialog images:** Icon (64x64) at top, author face (24x24) next to "By tront". Textures lazy-loaded on first About open.
@@ -61,6 +61,9 @@ cargo run            # run in debug mode
 - **Duplicate detection:** Background thread after scan completes. Tiered: group by size, partial hash (first 4KB), full hash. Results shown in Duplicates view tab sorted by wasted space.
 - **Rich tooltips:** Hover tooltip shows name, size, percentage, file count (dirs), and full path. Uses find_path_for_node lookup.
 - **Cushion shading:** 3D edge shadows on file blocks. Light highlight on top/left edges, dark shadow on bottom/right edges. Subtle semi-transparent overlays.
+- **Drive picker:** DriveInfo struct + enumerate_drives() using sysinfo::Disks. Visual drive cards with capacity bars on welcome screen. Toolbar "Drives" button opens picker dialog (egui::Window). Replaces hardcoded C/D/E/F buttons.
+- **Extension breakdown panel:** SidePanel::right with virtual-scrolled extension list. Colored swatches, selectable labels (extension + size + count), thin percentage bars. Click to filter treemap (dims non-matching files via gamma_multiply(0.25)). Click same extension to clear. Search filters the list. Auto-switches to ColorMode::Extension when filtering. Resizable (180-350px, default 220).
+- **Extension filter dimming:** render_node() accepts selected_ext parameter. Non-matching file blocks dimmed to 25% brightness. Directory headers/bodies not dimmed. Free space dimmed when filter active.
 
 ### Navigation
 - Scroll: zoom in/out at cursor
@@ -76,7 +79,7 @@ See `tasks.md` for full backlog (sourced from SpaceMonger, WinDirStat, SpaceSnif
 
 **Medium impact:** Color tagging, filesystem watcher, export/save scans, density slider.
 
-**Nice to have:** CLI, file attributes, drive picker, hardlink detection, NTFS ADS, custom cleanups, portable mode, Linux support, i18n.
+**Nice to have:** CLI, file attributes, hardlink detection, NTFS ADS, custom cleanups, portable mode, Linux support, i18n.
 
 ### Reference Repos (in SAMPLES/, gitignored)
 - SpaceMonger 1.x source. XOR-rect animation, radix sort.

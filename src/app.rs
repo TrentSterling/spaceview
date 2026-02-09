@@ -225,6 +225,14 @@ pub struct SpaceViewApp {
     // Window position tracking (saved on exit)
     last_window_outer_pos: Option<egui::Pos2>,
     last_window_inner_size: Option<egui::Vec2>,
+
+    // Extension breakdown panel
+    show_ext_panel: bool,
+    selected_extension: Option<String>,
+
+    // Drive picker
+    show_drive_picker: bool,
+    cached_drives: Vec<DriveInfo>,
 }
 
 #[derive(Clone)]
@@ -249,6 +257,30 @@ struct BreadcrumbEntry {
     name: String,
     color_index: usize,
     world_rect: egui::Rect,
+}
+
+struct DriveInfo {
+    mount_point: String,
+    name: String,
+    filesystem: String,
+    total_space: u64,
+    available_space: u64,
+    kind: String,
+    is_removable: bool,
+}
+
+fn enumerate_drives() -> Vec<DriveInfo> {
+    use sysinfo::Disks;
+    let disks = Disks::new_with_refreshed_list();
+    disks.list().iter().map(|disk| DriveInfo {
+        mount_point: disk.mount_point().to_string_lossy().to_string(),
+        name: disk.name().to_string_lossy().to_string(),
+        filesystem: disk.file_system().to_string_lossy().to_string(),
+        total_space: disk.total_space(),
+        available_space: disk.available_space(),
+        kind: format!("{:?}", disk.kind()),
+        is_removable: disk.is_removable(),
+    }).collect()
 }
 
 /// Compare two version strings (e.g. "0.5.3" vs "0.5.4").
@@ -349,6 +381,10 @@ impl SpaceViewApp {
             ext_color_map: std::collections::HashMap::new(),
             last_window_outer_pos: None,
             last_window_inner_size: None,
+            show_ext_panel: false,
+            selected_extension: None,
+            show_drive_picker: false,
+            cached_drives: Vec::new(),
         }
     }
 
@@ -380,6 +416,9 @@ impl SpaceViewApp {
         self.list_path.clear();
         self.cached_duplicates = None;
         self.dup_receiver = None;
+        self.selected_extension = None;
+        self.cached_drives.clear();
+        self.show_drive_picker = false;
 
         let progress = Arc::new(ScanProgress::new());
         self.scan_progress = Some(progress.clone());
@@ -791,6 +830,81 @@ impl eframe::App for SpaceViewApp {
             }
         }
 
+        // ---- Drive picker window ----
+        if self.show_drive_picker {
+            let mut close_picker = false;
+            let mut scan_target: Option<PathBuf> = None;
+            egui::Window::new("Select Drive")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    for drive in &self.cached_drives {
+                        let used = drive.total_space.saturating_sub(drive.available_space);
+                        let pct = if drive.total_space > 0 {
+                            used as f64 / drive.total_space as f64
+                        } else {
+                            0.0
+                        };
+                        let resp = ui.group(|ui| {
+                            ui.set_min_width(300.0);
+                            ui.horizontal(|ui| {
+                                let heading = if drive.name.is_empty() {
+                                    drive.mount_point.clone()
+                                } else {
+                                    format!("{} ({})", drive.mount_point, drive.name)
+                                };
+                                ui.heading(heading);
+                            });
+                            ui.horizontal(|ui| {
+                                let kind_label = if drive.is_removable { "Removable" } else { &drive.kind };
+                                ui.weak(format!("{} - {}", kind_label, drive.filesystem));
+                            });
+                            // Capacity bar
+                            let bar_height = 14.0;
+                            let (bar_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), bar_height),
+                                egui::Sense::hover(),
+                            );
+                            let bar_bg = egui::Color32::from_gray(60);
+                            ui.painter().rect_filled(bar_rect, 3.0, bar_bg);
+                            let fill_width = bar_rect.width() * pct as f32;
+                            if fill_width > 0.0 {
+                                let fill_rect = egui::Rect::from_min_size(
+                                    bar_rect.min,
+                                    egui::vec2(fill_width, bar_height),
+                                );
+                                let bar_col = if pct > 0.9 {
+                                    egui::Color32::from_rgb(220, 60, 50)
+                                } else if pct > 0.75 {
+                                    egui::Color32::from_rgb(220, 180, 50)
+                                } else {
+                                    egui::Color32::from_rgb(60, 140, 220)
+                                };
+                                ui.painter().rect_filled(fill_rect, 3.0, bar_col);
+                            }
+                            ui.label(format!(
+                                "{} free of {}",
+                                format_size(drive.available_space),
+                                format_size(drive.total_space),
+                            ));
+                        });
+                        if resp.response.interact(egui::Sense::click()).clicked() {
+                            scan_target = Some(PathBuf::from(&drive.mount_point));
+                            close_picker = true;
+                        }
+                        ui.add_space(2.0);
+                    }
+                });
+            if let Some(path) = scan_target {
+                self.start_scan(path);
+            }
+            if close_picker {
+                self.show_drive_picker = false;
+            }
+        }
+
         // ---- Top panel ----
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -804,12 +918,9 @@ impl eframe::App for SpaceViewApp {
                 }
 
                 ui.separator();
-                for letter in ['C', 'D', 'E', 'F'] {
-                    let drive = format!("{}:\\", letter);
-                    let drive_path = PathBuf::from(&drive);
-                    if drive_path.exists() && ui.button(&drive).clicked() {
-                        self.start_scan(drive_path);
-                    }
+                if ui.button("Drives").clicked() {
+                    self.cached_drives = enumerate_drives();
+                    self.show_drive_picker = !self.show_drive_picker;
                 }
 
                 if self.scanning {
@@ -913,6 +1024,15 @@ impl eframe::App for SpaceViewApp {
                             .desired_width(120.0));
                     }
                     if self.scan_root.is_some() && !self.scanning {
+                        if self.cached_extensions.is_some() {
+                            let ext_label = if self.show_ext_panel { "Hide Types" } else { "Types" };
+                            if ui.button(ext_label).clicked() {
+                                self.show_ext_panel = !self.show_ext_panel;
+                                if !self.show_ext_panel {
+                                    self.selected_extension = None;
+                                }
+                            }
+                        }
                         let fs_label = if self.show_free_space { "Hide Free" } else { "Show Free" };
                         if ui.button(fs_label).clicked() {
                             self.show_free_space = !self.show_free_space;
@@ -1064,21 +1184,166 @@ impl eframe::App for SpaceViewApp {
             });
         }
 
+        // ---- Extension breakdown side panel ----
+        if self.show_ext_panel && self.cached_extensions.is_some() {
+            egui::SidePanel::right("ext_panel")
+                .default_width(220.0)
+                .width_range(180.0..=350.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("File Types");
+                    if self.selected_extension.is_some() {
+                        if ui.button("Clear filter").clicked() {
+                            self.selected_extension = None;
+                        }
+                    }
+                    ui.separator();
+
+                    if let Some(ref ext_data) = self.cached_extensions {
+                        let total_size = self.root_size.max(1);
+                        let theme = self.theme;
+
+                        let mut filtered: Vec<&(String, u64, u64)> = ext_data.iter().collect();
+                        if !self.search_text.is_empty() {
+                            let q = self.search_text.to_lowercase();
+                            filtered.retain(|e| e.0.to_lowercase().contains(&q));
+                        }
+
+                        let row_h = 28.0;
+                        egui::ScrollArea::vertical().auto_shrink(false).show_rows(
+                            ui, row_h, filtered.len(), |ui, row_range| {
+                            for i in row_range {
+                                let (ext_name, ext_size, ext_count) = filtered[i];
+                                let pct = (*ext_size as f64 / total_size as f64) * 100.0;
+                                let ci = self.ext_color_map.get(ext_name).copied().unwrap_or(i);
+                                let (r, g, b) = theme.base_rgb(ci);
+                                let swatch_col = egui::Color32::from_rgb(r, g, b);
+                                let is_selected = self.selected_extension.as_deref() == Some(ext_name.as_str());
+
+                                ui.horizontal(|ui| {
+                                    // Colored swatch
+                                    let (swatch_rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(14.0, 14.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(swatch_rect, 2.0, swatch_col);
+
+                                    // Selectable label
+                                    let label_text = format!(
+                                        "{}  {}  {}",
+                                        ext_name, format_size(*ext_size), format_count(*ext_count),
+                                    );
+                                    if ui.selectable_label(is_selected, &label_text).clicked() {
+                                        if is_selected {
+                                            self.selected_extension = None;
+                                        } else {
+                                            self.selected_extension = Some(ext_name.clone());
+                                            self.color_mode = ColorMode::Extension;
+                                        }
+                                    }
+                                });
+
+                                // Thin percentage bar
+                                let bar_height = 4.0;
+                                let avail_w = ui.available_width();
+                                let (bar_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(avail_w, bar_height),
+                                    egui::Sense::hover(),
+                                );
+                                let fill_w = bar_rect.width() * (pct as f32 / 100.0);
+                                if fill_w > 0.0 {
+                                    let fill_rect = egui::Rect::from_min_size(
+                                        bar_rect.min,
+                                        egui::vec2(fill_w, bar_height),
+                                    );
+                                    ui.painter().rect_filled(fill_rect, 1.0, swatch_col.gamma_multiply(0.7));
+                                }
+                            }
+                        });
+                    }
+                });
+        }
+
         // ---- Central panel: treemap ----
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.scan_root.is_none() && !self.scanning {
-                // Welcome screen (always shows quickhelp)
+                // Populate drives on first render
+                if self.cached_drives.is_empty() {
+                    self.cached_drives = enumerate_drives();
+                }
+
+                // Welcome screen with drive cards
+                let mut scan_target: Option<PathBuf> = None;
                 ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() / 5.0);
+                    ui.add_space(ui.available_height() / 8.0);
                     ui.heading(format!("SpaceView v{}", VERSION));
                     ui.add_space(6.0);
                     ui.label("A disk space visualizer inspired by SpaceMonger.");
                     ui.label("Select a drive or folder to see where your space goes.");
                     ui.add_space(16.0);
 
+                    // Drive cards
+                    for drive in &self.cached_drives {
+                        let used = drive.total_space.saturating_sub(drive.available_space);
+                        let pct = if drive.total_space > 0 {
+                            used as f64 / drive.total_space as f64
+                        } else {
+                            0.0
+                        };
+                        let resp = ui.group(|ui| {
+                            ui.set_min_width(320.0);
+                            ui.set_max_width(400.0);
+                            ui.horizontal(|ui| {
+                                let heading = if drive.name.is_empty() {
+                                    drive.mount_point.clone()
+                                } else {
+                                    format!("{} ({})", drive.mount_point, drive.name)
+                                };
+                                ui.heading(heading);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let kind_label = if drive.is_removable { "Removable" } else { &drive.kind };
+                                    ui.weak(format!("{} - {}", kind_label, drive.filesystem));
+                                });
+                            });
+                            // Capacity bar
+                            let bar_height = 14.0;
+                            let (bar_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), bar_height),
+                                egui::Sense::hover(),
+                            );
+                            let bar_bg = egui::Color32::from_gray(60);
+                            ui.painter().rect_filled(bar_rect, 3.0, bar_bg);
+                            let fill_width = bar_rect.width() * pct as f32;
+                            if fill_width > 0.0 {
+                                let fill_rect = egui::Rect::from_min_size(
+                                    bar_rect.min,
+                                    egui::vec2(fill_width, bar_height),
+                                );
+                                let bar_col = if pct > 0.9 {
+                                    egui::Color32::from_rgb(220, 60, 50)
+                                } else if pct > 0.75 {
+                                    egui::Color32::from_rgb(220, 180, 50)
+                                } else {
+                                    egui::Color32::from_rgb(60, 140, 220)
+                                };
+                                ui.painter().rect_filled(fill_rect, 3.0, bar_col);
+                            }
+                            ui.label(format!(
+                                "{} free of {}",
+                                format_size(drive.available_space),
+                                format_size(drive.total_space),
+                            ));
+                        });
+                        if resp.response.interact(egui::Sense::click()).clicked() {
+                            scan_target = Some(PathBuf::from(&drive.mount_point));
+                        }
+                        ui.add_space(2.0);
+                    }
+
+                    ui.add_space(8.0);
                     if ui.button("Open Folder...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.start_scan(path);
+                            scan_target = Some(path);
                         }
                     }
 
@@ -1107,6 +1372,9 @@ impl eframe::App for SpaceViewApp {
                             ui.end_row();
                         });
                 });
+                if let Some(path) = scan_target {
+                    self.start_scan(path);
+                }
                 return;
             }
 
@@ -1311,7 +1579,7 @@ impl eframe::App for SpaceViewApp {
 
             // Walk the layout tree and draw visible nodes
             if let Some(ref layout) = self.world_layout {
-                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range, &self.ext_color_map);
+                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range, &self.ext_color_map, self.selected_extension.as_deref());
             }
 
             // 5. Hit test for hover (screen-space, skip while dragging)
@@ -1890,10 +2158,11 @@ fn render_nodes(
     color_mode: ColorMode,
     time_range: (u64, u64),
     ext_colors: &std::collections::HashMap<String, usize>,
+    selected_ext: Option<&str>,
 ) {
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors);
+        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
     }
 }
 
@@ -1908,6 +2177,7 @@ fn render_node(
     color_mode: ColorMode,
     time_range: (u64, u64),
     ext_colors: &std::collections::HashMap<String, usize>,
+    selected_ext: Option<&str>,
 ) {
     // Viewport culling
     if !screen_rect.intersects(viewport) {
@@ -1950,7 +2220,7 @@ fn render_node(
                         egui::pos2(tr.x, tr.y),
                         egui::vec2(tr.w, tr.h),
                     );
-                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range, ext_colors);
+                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
                 }
             }
         }
@@ -2006,7 +2276,7 @@ fn render_node(
         // Files / empty dirs: single pass
         let inner = screen_rect.shrink(1.0);
         let is_free_space = node.name == "<Free Space>";
-        let col = if is_free_space {
+        let base_col = if is_free_space {
             egui::Color32::from_rgb(60, 140, 60)
         } else {
             match color_mode {
@@ -2020,6 +2290,20 @@ fn render_node(
                     else { ext_file_color(&node.name, ext_colors, theme) }
                 }
             }
+        };
+        // Apply dimming for extension filter
+        let col = if let Some(filter_ext) = selected_ext {
+            if is_free_space {
+                base_col.gamma_multiply(0.25)
+            } else {
+                let file_ext = node.name.rsplit('.').next()
+                    .filter(|e| e.len() < 10 && *e != node.name.as_str())
+                    .map(|e| format!(".{}", e.to_lowercase()))
+                    .unwrap_or_else(|| "(no ext)".to_string());
+                if file_ext == filter_ext { base_col } else { base_col.gamma_multiply(0.25) }
+            }
+        } else {
+            base_col
         };
         painter.rect_filled(inner, 1.0, col);
 

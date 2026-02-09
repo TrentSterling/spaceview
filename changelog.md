@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.11.0 - Extension Breakdown Panel, Drive Picker
+- **Extension breakdown panel.** Side panel listing every file type by size, count, and percentage. Colored swatches match treemap colors. Click an extension to filter the treemap (dims non-matching files to 25% brightness). Click again to clear. Search filters the list. Resizable panel (180-350px).
+- **Drive picker.** Visual drive cards with capacity bars on the welcome screen. Shows drive name, filesystem, type, free/total space. Blue (<75%), yellow (75-90%), red (>90%) capacity bars. Click to scan. Toolbar "Drives" button opens picker dialog anytime.
+- **Extension filter dimming.** Treemap dims non-matching file blocks via gamma_multiply(0.25). Directory headers and bodies not dimmed. Free space dimmed. Auto-switches to extension color mode when filtering.
+- **Removed hardcoded drive buttons.** Replaced C/D/E/F buttons with the visual drive picker.
+
+## v0.10.0 - Live Scan, Extension Coloring, Duplicates, Cushion Shading
+- **Live scan visualization.** Treemap builds progressively during scanning. Interactive (zoom, pan, hover) while scanning.
+- **Extension coloring.** ColorMode::Extension colors files by extension. Cycles via toolbar button.
+- **Duplicate detection.** Background tiered hashing (size, partial 4KB, full). Duplicates view tab sorted by wasted space.
+- **Cushion shading.** 3D edge shadows on file blocks. Light top/left, dark bottom/right.
+- **Rich tooltips.** Name, size, percentage, file count, full path on hover.
+- **Deferred drops.** Old trees freed on background thread when switching drives.
+- **Window position persistence.** Saved to prefs.txt on exit, restored on launch.
+
+## v0.9.0 - Extension View, Minimap
+- **Extension grouping view.** Types tab shows treemap of file extensions by total size.
+- **Zoom minimap.** Bottom-right corner shows overview with viewport indicator when zoomed in.
+
 ## v0.8.0 - Age Heatmap, Free Space Corner Bias
 - **Age heatmap mode.** New "Age Map" color mode. Files colored by last modified date on a red-yellow-green gradient. Red = old untouched files, green = recently modified. Directories inherit the newest child's timestamp. Toggle via toolbar button. Status bar shows color legend.
 - **Free space corner bias.** Free space block now always sorts to the end, so the treemap places it in the bottom-right corner instead of jumping around based on relative size.
