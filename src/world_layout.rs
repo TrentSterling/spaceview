@@ -15,6 +15,7 @@ pub struct LayoutNode {
     pub color_index: usize,
     pub child_index: usize,
     pub children_expanded: bool,
+    pub modified: u64, // seconds since epoch (0 = unknown)
     pub children: Vec<LayoutNode>,
 }
 
@@ -133,6 +134,7 @@ fn layout_children(file_node: &FileNode, parent_rect: egui::Rect, depth: usize) 
             color_index,
             child_index: tr.index,
             children_expanded: false,
+            modified: child.modified,
             children: Vec::new(),
         });
     }

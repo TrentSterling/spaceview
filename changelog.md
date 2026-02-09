@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.0 - Age Heatmap, Free Space Corner Bias
+- **Age heatmap mode.** New "Age Map" color mode. Files colored by last modified date on a red-yellow-green gradient. Red = old untouched files, green = recently modified. Directories inherit the newest child's timestamp. Toggle via toolbar button. Status bar shows color legend.
+- **Free space corner bias.** Free space block now always sorts to the end, so the treemap places it in the bottom-right corner instead of jumping around based on relative size.
+- **Modified timestamps.** Scanner now captures file modified times. Stored in FileNode and propagated through LayoutNode for rendering.
+
 ## v0.7.0 - Views, Search, Virtual Scrolling
 - **View mode tabs.** Map (treemap), List (sortable directory browser), Top Files (1000 largest files). Switch instantly via toolbar tabs.
 - **List view.** Sortable columns: Name, Size, %, Files. Double-click directories to navigate. ".." to go up. Right-click context menu with Open in Explorer, Copy Path, Delete.

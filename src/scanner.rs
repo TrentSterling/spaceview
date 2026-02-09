@@ -10,6 +10,7 @@ pub struct FileNode {
     pub size: u64,
     pub is_dir: bool,
     pub file_count: u64,
+    pub modified: u64, // seconds since epoch (0 = unknown)
     pub children: Vec<FileNode>,
 }
 
@@ -66,6 +67,7 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
         size: 0,
         is_dir: true,
         file_count: 0,
+        modified: 0,
         children: Vec::new(),
     };
 
@@ -106,6 +108,10 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
             }
         } else {
             let file_size = metadata.len();
+            let modified = metadata.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             progress.files_scanned.fetch_add(1, Ordering::Relaxed);
             progress.bytes_scanned.fetch_add(file_size, Ordering::Relaxed);
 
@@ -117,10 +123,14 @@ pub fn scan_directory(root: &Path, progress: Arc<ScanProgress>) -> Option<FileNo
                 size: file_size,
                 is_dir: false,
                 file_count: 0,
+                modified,
                 children: Vec::new(),
             });
         }
     }
+
+    // Set directory modified to the newest child's modified time
+    node.modified = node.children.iter().map(|c| c.modified).max().unwrap_or(0);
 
     // Sort children largest first
     node.children.sort_by(|a, b| b.size.cmp(&a.size));

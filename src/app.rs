@@ -52,6 +52,12 @@ enum ViewMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+enum ColorMode {
+    Depth,
+    Age,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SortColumn {
     Name,
     Size,
@@ -184,6 +190,10 @@ pub struct SpaceViewApp {
     list_sort_asc: bool,
     list_path: Vec<String>,
     cached_largest: Option<Vec<(String, u64, String)>>,
+
+    // Color mode
+    color_mode: ColorMode,
+    time_range: (u64, u64), // (oldest, newest) modified timestamps across all files
 }
 
 #[derive(Clone)]
@@ -293,6 +303,8 @@ impl SpaceViewApp {
             list_sort_asc: false,
             list_path: Vec::new(),
             cached_largest: None,
+            color_mode: ColorMode::Depth,
+            time_range: (0, 0),
         }
     }
 
@@ -350,10 +362,19 @@ impl SpaceViewApp {
                                 size: free,
                                 is_dir: false,
                                 file_count: 0,
+                                modified: 0,
                                 children: Vec::new(),
                             });
                             root.size += free;
-                            root.children.sort_by(|a, b| b.size.cmp(&a.size));
+                            // Sort by size descending, but force free space to the end
+                            // so the treemap places it in the bottom-right corner
+                            root.children.sort_by(|a, b| {
+                                let a_free = a.name == "<Free Space>";
+                                let b_free = b.name == "<Free Space>";
+                                if a_free && !b_free { return std::cmp::Ordering::Greater; }
+                                if !a_free && b_free { return std::cmp::Ordering::Less; }
+                                b.size.cmp(&a.size)
+                            });
                         }
                     }
                 }
@@ -451,6 +472,9 @@ impl eframe::App for SpaceViewApp {
         if self.scanning {
             if let Some(ref rx) = self.scan_receiver {
                 if let Ok((result, largest)) = rx.try_recv() {
+                    if let Some(ref root) = result {
+                        self.time_range = compute_time_range(root);
+                    }
                     self.scan_root = result;
                     self.cached_largest = largest;
                     self.scanning = false;
@@ -699,6 +723,19 @@ impl eframe::App for SpaceViewApp {
                         self.dark_mode = !self.dark_mode;
                         save_prefs(&Prefs { hide_about: self.hide_about_on_start, dark_mode: self.dark_mode });
                     }
+                    // Color mode toggle
+                    if self.scan_root.is_some() {
+                        let color_label = match self.color_mode {
+                            ColorMode::Depth => "Age Map",
+                            ColorMode::Age => "Depth",
+                        };
+                        if ui.button(color_label).clicked() {
+                            self.color_mode = match self.color_mode {
+                                ColorMode::Depth => ColorMode::Age,
+                                ColorMode::Age => ColorMode::Depth,
+                            };
+                        }
+                    }
                 }
 
                 // View mode tabs
@@ -843,6 +880,15 @@ impl eframe::App for SpaceViewApp {
                                 pct
                             ));
                         }
+                    }
+
+                    if self.color_mode == ColorMode::Age {
+                        ui.separator();
+                        ui.colored_label(egui::Color32::from_rgb(220, 60, 50), "Old");
+                        ui.label("-");
+                        ui.colored_label(egui::Color32::from_rgb(220, 220, 50), "Mid");
+                        ui.label("-");
+                        ui.colored_label(egui::Color32::from_rgb(60, 220, 80), "New");
                     }
                 });
             });
@@ -1093,7 +1139,7 @@ impl eframe::App for SpaceViewApp {
 
             // Walk the layout tree and draw visible nodes
             if let Some(ref layout) = self.world_layout {
-                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme);
+                render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range);
             }
 
             // 5. Hit test for hover (screen-space, skip while dragging)
@@ -1432,10 +1478,12 @@ fn render_nodes(
     camera: &Camera,
     viewport: egui::Rect,
     theme: ColorTheme,
+    color_mode: ColorMode,
+    time_range: (u64, u64),
 ) {
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        render_node(painter, node, screen_rect, viewport, theme);
+        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range);
     }
 }
 
@@ -1447,6 +1495,8 @@ fn render_node(
     screen_rect: egui::Rect,
     viewport: egui::Rect,
     theme: ColorTheme,
+    color_mode: ColorMode,
+    time_range: (u64, u64),
 ) {
     // Viewport culling
     if !screen_rect.intersects(viewport) {
@@ -1462,7 +1512,10 @@ fn render_node(
         let hh = HEADER_PX.min(inner.height());
 
         // Phase 1: body fill + border stroke
-        let col = body_color(node.color_index, theme);
+        let col = match color_mode {
+            ColorMode::Depth => body_color(node.color_index, theme),
+            ColorMode::Age => age_body_color(node.modified, time_range),
+        };
         painter.rect_filled(inner, 1.0, col);
         painter.rect_stroke(inner, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(30)), egui::StrokeKind::Outside);
 
@@ -1486,7 +1539,7 @@ fn render_node(
                         egui::pos2(tr.x, tr.y),
                         egui::vec2(tr.w, tr.h),
                     );
-                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme);
+                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range);
                 }
             }
         }
@@ -1496,7 +1549,10 @@ fn render_node(
             let header = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), hh));
             let clipped = header.intersect(viewport);
             if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                let hdr_col = header_color(node.color_index, theme);
+                let hdr_col = match color_mode {
+                    ColorMode::Depth => header_color(node.color_index, theme),
+                    ColorMode::Age => age_header_color(node.modified, time_range),
+                };
                 painter.rect_filled(clipped, 1.0, hdr_col);
 
                 if hh >= 14.0 && inner.width() > 30.0 {
@@ -1541,10 +1597,14 @@ fn render_node(
         let is_free_space = node.name == "<Free Space>";
         let col = if is_free_space {
             egui::Color32::from_rgb(60, 140, 60)
-        } else if node.is_dir {
-            dir_color(node.color_index, theme)
         } else {
-            file_color(node.color_index, theme)
+            match color_mode {
+                ColorMode::Depth => {
+                    if node.is_dir { dir_color(node.color_index, theme) }
+                    else { file_color(node.color_index, theme) }
+                }
+                ColorMode::Age => age_color(node.modified, time_range),
+            }
         };
         painter.rect_filled(inner, 1.0, col);
 
@@ -1662,6 +1722,25 @@ fn find_dir_by_path<'a>(root: &'a FileNode, path: &[String]) -> Option<&'a FileN
     Some(current)
 }
 
+/// Compute (min, max) modified timestamps across all files in the tree.
+fn compute_time_range(node: &FileNode) -> (u64, u64) {
+    let mut min_t = u64::MAX;
+    let mut max_t = 0u64;
+    compute_time_range_recursive(node, &mut min_t, &mut max_t);
+    if min_t == u64::MAX { min_t = 0; }
+    (min_t, max_t)
+}
+
+fn compute_time_range_recursive(node: &FileNode, min_t: &mut u64, max_t: &mut u64) {
+    if !node.is_dir && node.modified > 0 && node.name != "<Free Space>" {
+        if node.modified < *min_t { *min_t = node.modified; }
+        if node.modified > *max_t { *max_t = node.modified; }
+    }
+    for child in &node.children {
+        compute_time_range_recursive(child, min_t, max_t);
+    }
+}
+
 fn collect_all_files(node: &FileNode, files: &mut Vec<(String, u64, String)>) {
     for child in &node.children {
         if child.is_dir {
@@ -1694,6 +1773,42 @@ fn body_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);
     let dim = |c: u8| (c as f32 * 0.35) as u8;
     egui::Color32::from_rgb(dim(r), dim(g), dim(b))
+}
+
+/// Map a file's modified timestamp to a red-to-green gradient.
+/// Old files = red/warm. Recent files = green/cool.
+fn age_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
+    if modified == 0 || time_range.0 >= time_range.1 {
+        return egui::Color32::from_rgb(128, 128, 128); // unknown = gray
+    }
+    // Normalize to 0.0 (oldest) .. 1.0 (newest)
+    let t = ((modified - time_range.0) as f64) / ((time_range.1 - time_range.0) as f64);
+    let t = t.clamp(0.0, 1.0) as f32;
+    // Red (old) -> Yellow (mid) -> Green (new)
+    let (r, g, b) = if t < 0.5 {
+        // Red to Yellow
+        let s = t * 2.0;
+        (220.0, 60.0 + 160.0 * s, 50.0)
+    } else {
+        // Yellow to Green
+        let s = (t - 0.5) * 2.0;
+        (220.0 - 160.0 * s, 220.0, 50.0 + 30.0 * s)
+    };
+    egui::Color32::from_rgb(r as u8, g as u8, b as u8)
+}
+
+/// Darker version of age color for directory bodies.
+fn age_body_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
+    let col = age_color(modified, time_range);
+    let dim = |c: u8| (c as f32 * 0.35) as u8;
+    egui::Color32::from_rgb(dim(col.r()), dim(col.g()), dim(col.b()))
+}
+
+/// Header version of age color.
+fn age_header_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
+    let col = age_color(modified, time_range);
+    let darken = |c: u8| (c as f32 * 0.80) as u8;
+    egui::Color32::from_rgb(darken(col.r()), darken(col.g()), darken(col.b()))
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
