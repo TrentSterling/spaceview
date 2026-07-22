@@ -244,6 +244,10 @@ struct HoveredInfo {
     world_rect: egui::Rect,
     has_children: bool,
     screen_rect: egui::Rect,
+    is_aggregate: bool,
+    /// child_index chain from the FileNode root to this node; resolves the
+    /// real path in O(depth) via resolve_path. AGGREGATE_INDEX terminates.
+    path_indices: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -1508,33 +1512,34 @@ impl eframe::App for SpaceViewApp {
                         if ui.button("Zoom Out").clicked() {
                             context_zoom_out = true;
                         }
-                        ui.separator();
-                        if ui.button("Open in Explorer").clicked() {
-                            if let Some(ref root) = self.scan_root {
-                                let path = find_path_for_node(root, &info.name, info.size);
-                                if let Some(p) = path {
-                                    let _ = std::process::Command::new("explorer")
-                                        .arg("/select,")
-                                        .arg(&p)
-                                        .spawn();
-                                }
-                            }
-                        }
-                        if ui.button("Copy Path").clicked() {
-                            if let Some(ref root) = self.scan_root {
-                                let path = find_path_for_node(root, &info.name, info.size);
-                                if let Some(p) = path {
-                                    ctx.copy_text(p.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                        if info.name != "<Free Space>" {
+                        // Aggregate "+N more" nodes have no real path; no
+                        // filesystem actions for them.
+                        if !info.is_aggregate {
                             ui.separator();
-                            if ui.button("Delete to Recycle Bin").clicked() {
+                            if ui.button("Open in Explorer").clicked() {
                                 if let Some(ref root) = self.scan_root {
-                                    let path = find_path_for_node(root, &info.name, info.size);
-                                    if let Some(p) = path {
-                                        self.pending_delete = Some(p);
+                                    if let Some(p) = hovered_real_path(root, &info) {
+                                        let _ = std::process::Command::new("explorer")
+                                            .arg("/select,")
+                                            .arg(&p)
+                                            .spawn();
+                                    }
+                                }
+                            }
+                            if ui.button("Copy Path").clicked() {
+                                if let Some(ref root) = self.scan_root {
+                                    if let Some(p) = hovered_real_path(root, &info) {
+                                        ctx.copy_text(p.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                            if info.name != "<Free Space>" {
+                                ui.separator();
+                                if ui.button("Delete to Recycle Bin").clicked() {
+                                    if let Some(ref root) = self.scan_root {
+                                        if let Some(p) = hovered_real_path(root, &info) {
+                                            self.pending_delete = Some(p);
+                                        }
                                     }
                                 }
                             }
@@ -1621,7 +1626,7 @@ impl eframe::App for SpaceViewApp {
                         tip += &format!("\n{} files", format_count(info.file_count));
                     }
                     if let Some(ref root) = self.scan_root {
-                        if let Some(p) = find_path_for_node(root, &info.name, info.size) {
+                        if let Some(p) = hovered_real_path(root, info) {
                             tip += &format!("\n{}", p.to_string_lossy());
                         }
                     }
@@ -2148,6 +2153,89 @@ impl eframe::App for SpaceViewApp {
 // Headers are drawn AFTER children so they're never obscured.
 // All text is clipped to its containing rect via painter.with_clip_rect().
 
+/// All opaque rects (bodies, borders, headers, file blocks) accumulate into
+/// one mesh in traversal order (painter's algorithm holds within a mesh), so
+/// tens of thousands of blocks cost the tessellator a single Shape instead of
+/// one path-tessellated rounded rect each. Text goes through the painter and
+/// therefore always draws on top, matching the old headers-over-children rule.
+#[derive(Default)]
+struct BlockBatch {
+    mesh: egui::epaint::Mesh,
+}
+
+impl BlockBatch {
+    fn push_quad(&mut self, rect: egui::Rect, c: [egui::Color32; 4]) {
+        if !rect.is_positive()
+            || !rect.min.x.is_finite()
+            || !rect.min.y.is_finite()
+            || !rect.max.x.is_finite()
+            || !rect.max.y.is_finite()
+        {
+            return;
+        }
+        use egui::epaint::{Vertex, WHITE_UV};
+        let i = self.mesh.vertices.len() as u32;
+        self.mesh.vertices.extend_from_slice(&[
+            Vertex { pos: rect.left_top(), uv: WHITE_UV, color: c[0] },
+            Vertex { pos: rect.right_top(), uv: WHITE_UV, color: c[1] },
+            Vertex { pos: rect.right_bottom(), uv: WHITE_UV, color: c[2] },
+            Vertex { pos: rect.left_bottom(), uv: WHITE_UV, color: c[3] },
+        ]);
+        self.mesh.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+    }
+
+    fn push_flat(&mut self, rect: egui::Rect, color: egui::Color32) {
+        self.push_quad(rect, [color; 4]);
+    }
+
+    /// File block with cushion feel: light top-left corner, dark bottom-right;
+    /// bilinear vertex interpolation gives the diagonal 3D gradient for free.
+    fn push_cushion(&mut self, rect: egui::Rect, color: egui::Color32) {
+        let tl = lighten_rgb(color, 0.13);
+        let br = darken_rgb(color, 0.20);
+        self.push_quad(rect, [tl, color, br, color]);
+    }
+
+    /// Thin border as 4 flat quads.
+    fn push_outline(&mut self, rect: egui::Rect, width: f32, color: egui::Color32) {
+        let r = rect;
+        let w = width;
+        self.push_flat(egui::Rect::from_min_max(r.left_top(), egui::pos2(r.max.x, r.min.y + w)), color);
+        self.push_flat(egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - w), r.right_bottom()), color);
+        self.push_flat(egui::Rect::from_min_max(egui::pos2(r.min.x, r.min.y + w), egui::pos2(r.min.x + w, r.max.y - w)), color);
+        self.push_flat(egui::Rect::from_min_max(egui::pos2(r.max.x - w, r.min.y + w), egui::pos2(r.max.x, r.max.y - w)), color);
+    }
+
+    fn into_shape(self) -> egui::Shape {
+        if self.mesh.is_empty() {
+            egui::Shape::Noop
+        } else {
+            egui::Shape::mesh(self.mesh)
+        }
+    }
+}
+
+fn lighten_rgb(c: egui::Color32, f: f32) -> egui::Color32 {
+    let lerp = |v: u8| (v as f32 + (255.0 - v as f32) * f) as u8;
+    egui::Color32::from_rgb(lerp(c.r()), lerp(c.g()), lerp(c.b()))
+}
+
+fn darken_rgb(c: egui::Color32, f: f32) -> egui::Color32 {
+    let s = 1.0 - f;
+    egui::Color32::from_rgb(
+        (c.r() as f32 * s) as u8,
+        (c.g() as f32 * s) as u8,
+        (c.b() as f32 * s) as u8,
+    )
+}
+
+/// Clamp painter-facing rects to the viewport. At MAX_ZOOM screen rects can
+/// reach millions of pixels; f32 vertex precision degrades and egui's
+/// tessellator has extreme-coordinate asserts. Geometry math stays unclamped.
+fn clamp_vis(r: egui::Rect, viewport: egui::Rect) -> egui::Rect {
+    r.intersect(viewport.expand(2.0))
+}
+
 /// Top-level entry: transform root nodes from world to screen, then recurse.
 fn render_nodes(
     painter: &egui::Painter,
@@ -2160,16 +2248,22 @@ fn render_nodes(
     ext_colors: &std::collections::HashMap<String, usize>,
     selected_ext: Option<&str>,
 ) {
+    let mut batch = BlockBatch::default();
+    // Reserve the mesh's z-slot BEFORE any text so labels draw on top.
+    let slot = painter.add(egui::Shape::Noop);
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        render_node(painter, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
+        render_node(painter, &mut batch, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
     }
+    painter.set(slot, batch.into_shape());
 }
 
-/// Core recursive render. `screen_rect` is the allocated screen area for this node
-/// (computed by the parent via treemap::layout, NOT from world_rect for children).
+/// Core recursive render. `screen_rect` is the allocated screen area for this
+/// node (scaled by the parent from its CACHED normalized child layout, NOT
+/// recomputed per frame).
 fn render_node(
     painter: &egui::Painter,
+    batch: &mut BlockBatch,
     node: &LayoutNode,
     screen_rect: egui::Rect,
     viewport: egui::Rect,
@@ -2192,40 +2286,35 @@ fn render_node(
         let inner = screen_rect.shrink(BORDER_PX);
         let hh = HEADER_PX.min(inner.height());
 
-        // Phase 1: body fill + border stroke
+        // Phase 1: body fill + border (batched; traversal order keeps z-order)
         let col = match color_mode {
             ColorMode::Depth | ColorMode::Extension => body_color(node.color_index, theme),
             ColorMode::Age => age_body_color(node.modified, time_range),
         };
-        painter.rect_filled(inner, 1.0, col);
-        painter.rect_stroke(inner, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(30)), egui::StrokeKind::Outside);
+        let vis = clamp_vis(inner, viewport);
+        batch.push_flat(vis, col);
+        batch.push_outline(vis, 1.0, egui::Color32::from_gray(30));
 
-        // Phase 2: children in screen-space content area
+        // Phase 2: children from the cached normalized layout
         if node.children_expanded && !node.children.is_empty() {
             let content = egui::Rect::from_min_max(
                 egui::pos2(inner.min.x + PAD_PX, inner.min.y + hh),
                 egui::pos2(inner.max.x - PAD_PX, inner.max.y - PAD_PX),
             );
             if content.width() > MIN_SCREEN_PX && content.height() > MIN_SCREEN_PX {
-                let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
-                let rects = treemap::layout(
-                    content.min.x,
-                    content.min.y,
-                    content.width(),
-                    content.height(),
-                    &sizes,
-                );
-                for tr in &rects {
+                let sx = content.width();
+                let sy = content.height() / node.child_norm_aspect.max(1e-6);
+                for (child, nr) in node.children.iter().zip(&node.child_norm) {
                     let child_rect = egui::Rect::from_min_size(
-                        egui::pos2(tr.x, tr.y),
-                        egui::vec2(tr.w, tr.h),
+                        egui::pos2(content.min.x + nr.x * sx, content.min.y + nr.y * sy),
+                        egui::vec2(nr.w * sx, nr.h * sy),
                     );
-                    render_node(painter, &node.children[tr.index], child_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
+                    render_node(painter, batch, child, child_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
                 }
             }
         }
 
-        // Phase 3: header ON TOP of children
+        // Phase 3: header ON TOP of children (batched after children pushes)
         if inner.height() >= 12.0 && inner.width() >= 8.0 {
             let header = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), hh));
             let clipped = header.intersect(viewport);
@@ -2234,11 +2323,13 @@ fn render_node(
                     ColorMode::Depth | ColorMode::Extension => header_color(node.color_index, theme),
                     ColorMode::Age => age_header_color(node.modified, time_range),
                 };
-                painter.rect_filled(clipped, 1.0, hdr_col);
+                batch.push_flat(clipped, hdr_col);
 
                 if hh >= 14.0 && inner.width() > 30.0 {
                     let text_painter = painter.with_clip_rect(clipped);
-                    let font_size = (hh - 4.0).clamp(9.0, 13.0);
+                    // Whole-pixel font sizes: fractional sizes mint new glyph
+                    // rasterizations every zoom frame and grow the atlas.
+                    let font_size = (hh - 4.0).clamp(9.0, 13.0).round();
                     let size_text = if node.file_count > 0 && inner.width() > 180.0 {
                         format!("{} ({})", format_size(node.size), format_count(node.file_count))
                     } else {
@@ -2305,19 +2396,14 @@ fn render_node(
         } else {
             base_col
         };
-        painter.rect_filled(inner, 1.0, col);
-
-        // Cushion shading: darken edges for 3D effect
-        if inner.width() > 6.0 && inner.height() > 6.0 {
-            draw_cushion(painter, inner);
-        }
+        batch.push_cushion(clamp_vis(inner, viewport), col);
 
         if inner.width() > 35.0 && inner.height() > 14.0 {
             let text_clip = inner.intersect(viewport);
             if text_clip.width() > 0.0 && text_clip.height() > 0.0 {
                 let text_painter = painter.with_clip_rect(text_clip);
                 let text_col = text_color_for(col);
-                let font_size = 11.0f32.min(inner.height() - 3.0);
+                let font_size = 11.0f32.min(inner.height() - 3.0).round();
                 let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
                 let label = truncate_str(&node.name, max_chars);
 
@@ -2346,6 +2432,7 @@ fn render_node(
 // ===================== Minimap Rendering =====================
 
 /// Simplified treemap render for the minimap. Just colored blocks, no text.
+/// One batched mesh; recursion stops below 2px cells (solid block instead).
 fn render_minimap_nodes(
     painter: &egui::Painter,
     nodes: &[LayoutNode],
@@ -2353,14 +2440,16 @@ fn render_minimap_nodes(
     viewport: egui::Rect,
     theme: ColorTheme,
 ) {
+    let mut batch = BlockBatch::default();
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        render_minimap_node(painter, node, screen_rect, viewport, theme);
+        render_minimap_node(&mut batch, node, screen_rect, viewport, theme);
     }
+    painter.add(batch.into_shape());
 }
 
 fn render_minimap_node(
-    painter: &egui::Painter,
+    batch: &mut BlockBatch,
     node: &LayoutNode,
     screen_rect: egui::Rect,
     viewport: egui::Rect,
@@ -2369,42 +2458,51 @@ fn render_minimap_node(
     if !screen_rect.intersects(viewport) { return; }
     if screen_rect.width() < 1.0 || screen_rect.height() < 1.0 { return; }
 
-    if node.is_dir && node.has_children && node.children_expanded && !node.children.is_empty() {
-        // Just recurse into children
-        let inner = screen_rect.shrink(0.5);
-        let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
-        let rects = treemap::layout(inner.min.x, inner.min.y, inner.width(), inner.height(), &sizes);
-        for tr in &rects {
+    let inner = screen_rect.shrink(0.5);
+    if node.is_dir
+        && node.has_children
+        && node.children_expanded
+        && !node.children.is_empty()
+        && inner.width() >= 2.0
+        && inner.height() >= 2.0
+    {
+        // Recurse into children using the cached normalized layout
+        let sx = inner.width();
+        let sy = inner.height() / node.child_norm_aspect.max(1e-6);
+        for (child, nr) in node.children.iter().zip(&node.child_norm) {
             let child_rect = egui::Rect::from_min_size(
-                egui::pos2(tr.x, tr.y), egui::vec2(tr.w, tr.h),
+                egui::pos2(inner.min.x + nr.x * sx, inner.min.y + nr.y * sy),
+                egui::vec2(nr.w * sx, nr.h * sy),
             );
-            render_minimap_node(painter, &node.children[tr.index], child_rect, viewport, theme);
+            render_minimap_node(batch, child, child_rect, viewport, theme);
         }
     } else {
-        // Leaf or unexpanded: solid color block
+        // Leaf, unexpanded, or sub-pixel: solid color block
         let col = if node.name == "<Free Space>" {
             egui::Color32::from_rgb(60, 140, 60)
         } else {
             let (r, g, b) = theme.base_rgb(node.color_index);
             egui::Color32::from_rgb(r, g, b)
         };
-        painter.rect_filled(screen_rect, 0.0, col);
+        batch.push_flat(screen_rect.intersect(viewport), col);
     }
 }
 
 // ===================== Screen-Space Hit Testing =====================
 
-/// Hit test by traversing the layout tree and computing screen rects
-/// the same way rendering does (via treemap::layout at each level).
+/// Hit test by traversing the layout tree and scaling each node's CACHED
+/// normalized child layout the same way rendering does. Accumulates the
+/// child_index trail so the hit's real path resolves in O(depth).
 fn screen_hit_test(
     nodes: &[LayoutNode],
     camera: &Camera,
     viewport: egui::Rect,
     screen_pos: egui::Pos2,
 ) -> Option<HoveredInfo> {
+    let mut trail: Vec<usize> = Vec::new();
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
-        if let Some(hit) = hit_test_node(node, screen_rect, viewport, screen_pos) {
+        if let Some(hit) = hit_test_node(node, screen_rect, viewport, screen_pos, &mut trail) {
             return Some(hit);
         }
     }
@@ -2417,6 +2515,7 @@ fn hit_test_node(
     screen_rect: egui::Rect,
     viewport: egui::Rect,
     pos: egui::Pos2,
+    trail: &mut Vec<usize>,
 ) -> Option<HoveredInfo> {
     if !screen_rect.contains(pos) {
         return None;
@@ -2424,6 +2523,8 @@ fn hit_test_node(
     if screen_rect.width() < MIN_SCREEN_PX || screen_rect.height() < MIN_SCREEN_PX {
         return None;
     }
+
+    trail.push(node.child_index);
 
     // Check children first (deeper = more specific)
     if node.is_dir && node.has_children && node.children_expanded && !node.children.is_empty() {
@@ -2434,27 +2535,21 @@ fn hit_test_node(
             egui::pos2(inner.max.x - PAD_PX, inner.max.y - PAD_PX),
         );
         if content.width() > MIN_SCREEN_PX && content.height() > MIN_SCREEN_PX && content.contains(pos) {
-            let sizes: Vec<f64> = node.children.iter().map(|c| c.size as f64).collect();
-            let rects = treemap::layout(
-                content.min.x,
-                content.min.y,
-                content.width(),
-                content.height(),
-                &sizes,
-            );
-            for tr in &rects {
+            let sx = content.width();
+            let sy = content.height() / node.child_norm_aspect.max(1e-6);
+            for (child, nr) in node.children.iter().zip(&node.child_norm) {
                 let child_rect = egui::Rect::from_min_size(
-                    egui::pos2(tr.x, tr.y),
-                    egui::vec2(tr.w, tr.h),
+                    egui::pos2(content.min.x + nr.x * sx, content.min.y + nr.y * sy),
+                    egui::vec2(nr.w * sx, nr.h * sy),
                 );
-                if let Some(deeper) = hit_test_node(&node.children[tr.index], child_rect, viewport, pos) {
+                if let Some(deeper) = hit_test_node(child, child_rect, viewport, pos, trail) {
                     return Some(deeper);
                 }
             }
         }
     }
 
-    Some(HoveredInfo {
+    let info = HoveredInfo {
         name: node.name.clone(),
         size: node.size,
         file_count: node.file_count,
@@ -2462,7 +2557,11 @@ fn hit_test_node(
         world_rect: node.world_rect,
         has_children: node.has_children,
         screen_rect,
-    })
+        is_aggregate: node.is_aggregate,
+        path_indices: trail.clone(),
+    };
+    trail.pop();
+    Some(info)
 }
 
 // ===================== Tree Helpers =====================
@@ -2681,35 +2780,6 @@ fn age_header_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
     egui::Color32::from_rgb(darken(col.r()), darken(col.g()), darken(col.b()))
 }
 
-/// Draw cushion shading: darken edges to create a 3D raised effect.
-fn draw_cushion(painter: &egui::Painter, rect: egui::Rect) {
-    let w = (rect.width() * 0.15).min(6.0).max(1.0);
-    let h = (rect.height() * 0.15).min(6.0).max(1.0);
-    let dark = egui::Color32::from_rgba_premultiplied(0, 0, 0, 30);
-    let light = egui::Color32::from_rgba_premultiplied(255, 255, 255, 18);
-
-    // Top highlight
-    painter.rect_filled(
-        egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, rect.min.y + h)),
-        0.0, light,
-    );
-    // Left highlight
-    painter.rect_filled(
-        egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + h), egui::pos2(rect.min.x + w, rect.max.y)),
-        0.0, light,
-    );
-    // Bottom shadow
-    painter.rect_filled(
-        egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - h), rect.max),
-        0.0, dark,
-    );
-    // Right shadow
-    painter.rect_filled(
-        egui::Rect::from_min_max(egui::pos2(rect.max.x - w, rect.min.y), egui::pos2(rect.max.x, rect.max.y - h)),
-        0.0, dark,
-    );
-}
-
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
     let lum = 0.299 * bg.r() as f64 + 0.587 * bg.g() as f64 + 0.114 * bg.b() as f64;
     if lum > 150.0 {
@@ -2772,15 +2842,25 @@ fn format_duration(secs: f64) -> String {
     }
 }
 
-/// Find the path of a node by name and size in the file tree.
-fn find_path_for_node(root: &FileNode, name: &str, size: u64) -> Option<PathBuf> {
-    if root.name == name && root.size == size {
-        return Some(root.path.clone());
-    }
-    for child in &root.children {
-        if let Some(p) = find_path_for_node(child, name, size) {
-            return Some(p);
+/// Resolve a hit-test index trail to its FileNode in O(depth).
+/// Replaces the old name+size whole-tree DFS, which was O(total_nodes) per
+/// hover frame AND could resolve to the WRONG file on name+size collisions
+/// (dangerous with Delete to Recycle Bin). Aggregate "+N more" nodes have no
+/// backing FileNode and resolve to None.
+fn resolve_path<'a>(root: &'a FileNode, indices: &[usize]) -> Option<&'a FileNode> {
+    let mut cur = root;
+    for &i in indices {
+        if i == crate::world_layout::AGGREGATE_INDEX {
+            return None;
         }
+        cur = cur.children.get(i)?;
     }
-    None
+    Some(cur)
+}
+
+/// Real filesystem path for a hovered node, if it has one.
+fn hovered_real_path(root: &FileNode, info: &HoveredInfo) -> Option<PathBuf> {
+    resolve_path(root, &info.path_indices)
+        .map(|n| n.path.clone())
+        .filter(|p| !p.as_os_str().is_empty())
 }

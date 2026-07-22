@@ -82,6 +82,10 @@ pub fn scan_directory_live(
         Err(_) => return Some(node),
     };
 
+    // Snapshots deep-clone the whole partial tree; on a huge drive that cost
+    // grows quadratically over the scan. Throttle to at most 2 per second.
+    let mut last_snapshot = Instant::now() - std::time::Duration::from_secs(60);
+
     for entry in entries {
         if progress.cancel.load(Ordering::Relaxed) {
             return None;
@@ -110,10 +114,13 @@ pub fn scan_directory_live(
                 if child.size > 0 {
                     node.children.push(child);
                 }
-                // Sort and send snapshot after each top-level dir
+                // Sort, then send a snapshot after each top-level dir (throttled)
                 node.children.sort_by(|a, b| b.size.cmp(&a.size));
                 node.modified = node.children.iter().map(|c| c.modified).max().unwrap_or(0);
-                let _ = snapshot_tx.send(node.clone());
+                if last_snapshot.elapsed() >= std::time::Duration::from_millis(500) {
+                    last_snapshot = Instant::now();
+                    let _ = snapshot_tx.send(node.clone());
+                }
             }
         } else {
             let file_size = metadata.len();
