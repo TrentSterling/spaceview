@@ -424,6 +424,16 @@ impl SpaceViewApp {
         }
     }
 
+    /// Drop every cached reference INTO the FileNode tree (hover info, open
+    /// context menu). Must be called whenever scan_root is replaced or its
+    /// child order mutated: HoveredInfo.path_indices index into the tree, and
+    /// stale indices against a re-sorted tree could resolve to the wrong file
+    /// (context menu actions include Delete to Recycle Bin).
+    fn invalidate_tree_references(&mut self) {
+        self.hovered_node_info = None;
+        self.context_menu_info = None;
+    }
+
     fn start_scan(&mut self, path: PathBuf) {
         if let Some(ref prog) = self.scan_progress {
             prog.cancel.store(true, Ordering::Relaxed);
@@ -447,7 +457,7 @@ impl SpaceViewApp {
         self.scanning = true;
         self.view_mode = ViewMode::Treemap;
         self.depth_context.clear();
-        self.hovered_node_info = None;
+        self.invalidate_tree_references();
         self.scan_path = Some(path.clone());
         self.list_path.clear();
         self.cached_duplicates = None;
@@ -692,6 +702,7 @@ impl eframe::App for SpaceViewApp {
                 if let Some(tree) = latest {
                     self.scan_root = Some(tree);
                     self.world_layout = None; // Force layout rebuild
+                    self.invalidate_tree_references();
                 }
             }
 
@@ -713,6 +724,7 @@ impl eframe::App for SpaceViewApp {
                     self.scan_receiver = None;
                     self.snapshot_receiver = None;
                     self.world_layout = None; // Force final layout rebuild
+                    self.invalidate_tree_references();
 
                     // Start background duplicate detection
                     self.cached_duplicates = None;
@@ -1117,6 +1129,7 @@ impl eframe::App for SpaceViewApp {
                                 }
                             }
                             self.world_layout = None;
+                            self.invalidate_tree_references();
                         }
                     }
                 });
