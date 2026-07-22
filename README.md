@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TrentSterling/SpaceView/releases/latest">Download Latest Release</a>
+  <a href="https://github.com/TrentSterling/spaceview/releases/latest">Download Latest Release</a>
 </p>
 
 ---
@@ -56,12 +56,12 @@
 
 ### Download
 
-Grab the latest `spaceview.exe` from the [Releases](https://github.com/TrentSterling/SpaceView/releases/latest) page. No installation required. Just run it.
+Grab the latest `spaceview.exe` from the [Releases](https://github.com/TrentSterling/spaceview/releases/latest) page. No installation required. Just run it.
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/TrentSterling/SpaceView.git
+git clone https://github.com/TrentSterling/spaceview.git
 cd SpaceView
 cargo build --release
 ```
@@ -129,5 +129,5 @@ MIT License. See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  Made by <a href="https://github.com/TrentSterling">tront</a> | <a href="https://tront.xyz/SpaceView/">Website</a> | <a href="https://blog.tront.xyz/posts/spaceview/">Blog Post</a>
+  Made by <a href="https://github.com/TrentSterling">tront</a> | <a href="https://tront.xyz/spaceview/">Website</a> | <a href="https://blog.tront.xyz/posts/spaceview/">Blog Post</a>
 </p>
