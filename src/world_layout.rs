@@ -120,6 +120,12 @@ impl WorldLayout {
         chain
     }
 
+    /// Walk-count all materialized LayoutNodes (diagnostic; the perf harness
+    /// cross-checks this against the incremental `live_nodes` accounting).
+    pub fn count_nodes(&self) -> usize {
+        count_nodes(&self.root_nodes)
+    }
+
 }
 
 /// Lay out the children of `file_node` into `parent_rect` using squarified

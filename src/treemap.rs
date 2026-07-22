@@ -12,6 +12,8 @@ pub struct TreemapRect {
 /// Takes a bounding rectangle and a slice of sizes (must be sorted descending),
 /// returns positioned rectangles for each item.
 pub fn layout(x: f32, y: f32, w: f32, h: f32, sizes: &[f64]) -> Vec<TreemapRect> {
+    #[cfg(not(test))]
+    crate::stress::inc_layout_calls();
     if sizes.is_empty() || w <= 0.0 || h <= 0.0 {
         return Vec::new();
     }

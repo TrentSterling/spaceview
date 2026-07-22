@@ -3,6 +3,7 @@
 mod app;
 mod camera;
 mod scanner;
+mod stress;
 mod treemap;
 mod world_layout;
 
@@ -35,6 +36,12 @@ fn install_panic_log() {
 fn main() -> eframe::Result<()> {
     install_panic_log();
 
+    // Permanent perf harness: --synthetic N (in-memory fake tree, no scan)
+    // and --stress S (scripted camera thrash for S seconds, CSV metrics, exit).
+    let args: Vec<String> = std::env::args().collect();
+    let synthetic_n = stress::parse_flag_usize(&args, "--synthetic");
+    let stress_s = stress::parse_flag_f32(&args, "--stress");
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
         .expect("Failed to load icon");
 
@@ -65,6 +72,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "SpaceView",
         options,
-        Box::new(|cc| Ok(Box::new(app::SpaceViewApp::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = app::SpaceViewApp::new(cc);
+            app.configure_stress(synthetic_n, stress_s);
+            Ok(Box::new(app))
+        }),
     )
 }

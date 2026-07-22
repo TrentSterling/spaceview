@@ -233,6 +233,10 @@ pub struct SpaceViewApp {
     // Drive picker
     show_drive_picker: bool,
     cached_drives: Vec<DriveInfo>,
+
+    // Perf harness (only active with --synthetic / --stress CLI flags)
+    stress: Option<crate::stress::StressScript>,
+    metrics: Option<crate::stress::MetricsLogger>,
 }
 
 #[derive(Clone)]
@@ -389,6 +393,34 @@ impl SpaceViewApp {
             selected_extension: None,
             show_drive_picker: false,
             cached_drives: Vec::new(),
+            stress: None,
+            metrics: None,
+        }
+    }
+
+    /// Wire up --synthetic N / --stress S instrumentation. Called once from
+    /// main.rs right after construction. No-op if both are None.
+    pub fn configure_stress(&mut self, synthetic_n: Option<usize>, stress_s: Option<f32>) {
+        if let Some(n) = synthetic_n {
+            eprintln!("[stress] generating synthetic tree (~{} files)...", n);
+            let root = crate::stress::generate_synthetic_tree(n);
+            eprintln!(
+                "[stress] synthetic tree ready: {} files, {} bytes",
+                root.file_count, root.size
+            );
+            self.scan_root = Some(root);
+            self.scanning = false;
+            self.world_layout = None;
+            if self.metrics.is_none() {
+                self.metrics = Some(crate::stress::MetricsLogger::new());
+            }
+        }
+        if let Some(s) = stress_s {
+            eprintln!("[stress] automated camera thrash for {}s", s);
+            self.stress = Some(crate::stress::StressScript::new(s));
+            if self.metrics.is_none() {
+                self.metrics = Some(crate::stress::MetricsLogger::new());
+            }
         }
     }
 
@@ -595,6 +627,40 @@ impl eframe::App for SpaceViewApp {
             1.0 / 60.0
         };
         self.last_time = now;
+
+        // Perf-harness metrics: record frame cost, flush a CSV row once/sec.
+        // The 1Hz full walk also cross-checks the incremental live_nodes
+        // accounting so budget drift gets caught immediately.
+        if let Some(m) = self.metrics.as_mut() {
+            if m.tick((dt as f64) * 1000.0) {
+                let (walked, live) = self
+                    .world_layout
+                    .as_ref()
+                    .map(|l| (l.count_nodes(), l.live_nodes))
+                    .unwrap_or((0, 0));
+                if walked != live {
+                    eprintln!(
+                        "[stress] WARNING: live_nodes drift: walked={} live={}",
+                        walked, live
+                    );
+                }
+                m.flush_log(walked);
+            }
+        }
+
+        // Perf-harness termination: exit once the scripted duration elapsed.
+        if let Some(script) = self.stress.as_ref() {
+            if script.finished() {
+                let cycles = script.cycle;
+                if let Some(m) = self.metrics.as_mut() {
+                    let walked = self.world_layout.as_ref().map(|l| l.count_nodes()).unwrap_or(0);
+                    m.flush_log(walked);
+                    m.write_summary(cycles);
+                }
+                eprintln!("[stress] duration elapsed after {} thrash cycles, exiting", cycles);
+                std::process::exit(0);
+            }
+        }
 
         // Track window position for save-on-exit
         let vp_info = ctx.input(|i| i.viewport().clone());
@@ -1435,6 +1501,13 @@ impl eframe::App for SpaceViewApp {
 
             // 1. Advance camera animation
             let camera_moving = self.camera.tick(dt, viewport);
+
+            // Automated camera thrash (--stress): drives the real scroll_zoom/
+            // drag_pan entry points at simulated positions, no OS input injection.
+            if let Some(script) = self.stress.as_mut() {
+                script.step(&mut self.camera, viewport, dt);
+                ctx.request_repaint();
+            }
 
             // 2. Handle input
             let response = ui.allocate_rect(viewport, egui::Sense::click_and_drag());
@@ -2281,6 +2354,7 @@ fn render_node(
     if screen_rect.width() < MIN_SCREEN_PX || screen_rect.height() < MIN_SCREEN_PX {
         return;
     }
+    crate::stress::inc_shapes();
 
     if node.is_dir && node.has_children {
         let inner = screen_rect.shrink(BORDER_PX);
@@ -2457,6 +2531,7 @@ fn render_minimap_node(
 ) {
     if !screen_rect.intersects(viewport) { return; }
     if screen_rect.width() < 1.0 || screen_rect.height() < 1.0 { return; }
+    crate::stress::inc_shapes();
 
     let inner = screen_rect.shrink(0.5);
     if node.is_dir

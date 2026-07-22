@@ -17,3 +17,5 @@
 # OS files
 Thumbs.db
 .DS_Store
+stress_log.csv
+stress_summary.txt

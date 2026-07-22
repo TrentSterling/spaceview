@@ -18,7 +18,7 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.11.0)
+## Architecture (v0.12.0)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -26,13 +26,16 @@ cargo run            # run in debug mode
 - `build.rs` - Embeds icon.ico into Windows .exe via winresource
 - `src/camera.rs` - Continuous Camera with bounds clamping: world_to_screen, screen_to_world, scroll_zoom, drag_pan, snap_to animations. MIN_ZOOM=1.0, MAX_ZOOM=5000
 - `src/scanner.rs` - Recursive directory scanner with progress tracking, elapsed time, scan rate, cancellation, and live snapshot channel (scan_directory_live)
-- `src/world_layout.rs` - LayoutNode tree in world-space. Lazy expand_visible, prune, ancestor_chain (world_rects used for camera/expand/prune only)
-- `src/treemap.rs` - Squarified treemap layout algorithm (Bruls, Huizing, van Wijk)
+- `src/world_layout.rs` - LayoutNode tree in world-space. Lazy expand_visible (2048-child cap per expansion + "+N more" aggregate tail, 250k global node budget), capacity-releasing prune, cached normalized child layouts (child_norm), ancestor_chain
+- `src/treemap.rs` - Squarified treemap layout algorithm (Bruls, Huizing, van Wijk). O(1)-per-item row selection via running min/max; layout_norm for cacheable normalized layouts. Test module pins behavior to the original reference implementation
+- `src/stress.rs` - Perf harness: `--synthetic N` in-memory tree generator, `--stress S` scripted camera thrash, per-second CSV metrics (frame ms, layout calls, shapes, node count, RSS)
 
 ### Key Design Decisions
-- **Screen-space child layout:** Children positioned at render time via `treemap::layout` in screen pixels. Fixed 16px headers, 3px padding, 1.5px border. No proportional world-space mismatch (SpaceMonger-style).
+- **Cached normalized layouts (v0.12):** Each directory's squarified child layout is computed ONCE at expansion, normalized to a `1.0 x aspect` box, and stored on the LayoutNode (`child_norm` + `child_norm_aspect`). Render, hit test, and minimap scale the cached rects into the screen content rect every frame; `treemap::layout` never runs in the per-frame path. World rects derive from the same normalized layout, so world-space decisions and rendering always agree. Fixed 16px headers, 3px padding, 1.5px border.
+- **Batched block mesh (v0.12):** All opaque rects (dir bodies, borders, headers, file blocks) accumulate into ONE vertex-colored `egui::Mesh` in traversal order (painter's algorithm holds within a mesh); text goes through the painter and always draws on top. Cushion shading is a per-vertex gradient (light top-left, dark bottom-right corners), not overlay rects. The mesh z-slot is reserved via `painter.add(Shape::Noop)` + `painter.set` before traversal.
+- **Bounded memory (v0.12):** `EXPAND_CHILD_CAP = 2048` per expansion with a "+N more" aggregate tail node (`is_aggregate`, `child_index = AGGREGATE_INDEX`); `NODE_BUDGET = 250_000` global cap gates expansion; prune assigns fresh Vecs (never `clear()`, which retains capacity) and runs every 15 frames, or every frame while over budget. `WorldLayout.live_nodes` tracks the count incrementally; the stress harness cross-checks it against a full walk.
 - **Two-phase rendering:** Directories render as body, children, header. Headers drawn ON TOP of children, never obscured.
-- **Screen-space hit testing:** Hit test mirrors render traversal. Runs `treemap::layout` at each level to compute exact screen rects.
+- **Screen-space hit testing:** Hit test mirrors render traversal over the cached layouts and accumulates the `child_index` trail; `HoveredInfo.path_indices` resolves the real FileNode path in O(depth) via `resolve_path` (no name+size searching; aggregates resolve to None and get no filesystem actions).
 - **Text clipping:** All text uses `painter.with_clip_rect()` to prevent spilling beyond rect boundaries.
 - **Bounded camera:** No nav_stack. Camera with center+zoom, clamped to world bounds. MIN_ZOOM=1.0 (can't zoom past root), MAX_ZOOM=5000 (prevents coordinate overflow). Center clamped so viewport never leaves world_rect.
 - **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering.
@@ -60,7 +63,7 @@ cargo run            # run in debug mode
 - **Extension coloring:** ColorMode::Extension colors files by extension using a map built from cached_extensions (sorted by size). Directories stay depth-colored. Cycles with the color mode button.
 - **Duplicate detection:** Background thread after scan completes. Tiered: group by size, partial hash (first 4KB), full hash. Results shown in Duplicates view tab sorted by wasted space.
 - **Rich tooltips:** Hover tooltip shows name, size, percentage, file count (dirs), and full path. Uses find_path_for_node lookup.
-- **Cushion shading:** 3D edge shadows on file blocks. Light highlight on top/left edges, dark shadow on bottom/right edges. Subtle semi-transparent overlays.
+- **Cushion shading:** 3D shading on file blocks via per-vertex colors in the batched mesh: lightened top-left corner, darkened bottom-right, diagonal gradient from bilinear interpolation. Zero extra geometry.
 - **Drive picker:** DriveInfo struct + enumerate_drives() using sysinfo::Disks. Visual drive cards with capacity bars on welcome screen. Toolbar "Drives" button opens picker dialog (egui::Window). Replaces hardcoded C/D/E/F buttons.
 - **Extension breakdown panel:** SidePanel::right with virtual-scrolled extension list. Colored swatches, selectable labels (extension + size + count), thin percentage bars. Click to filter treemap (dims non-matching files via gamma_multiply(0.25)). Click same extension to clear. Search filters the list. Auto-switches to ColorMode::Extension when filtering. Resizable (180-350px, default 220).
 - **Extension filter dimming:** render_node() accepts selected_ext parameter. Non-matching file blocks dimmed to 25% brightness. Directory headers/bodies not dimmed. Free space dimmed when filter active.

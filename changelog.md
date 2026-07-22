@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.12.0 - Renderer Overhaul: Cached Layouts, Bounded Memory, Crashproofing
+- **Cached treemap layouts.** Each directory's squarified layout is computed once at expansion (normalized, camera-independent) and reused every frame by render, hit test, and minimap. Previously all three re-ran the full layout algorithm per visible directory per frame (measured at 100-316 layout calls/frame during zoom thrash; now 0-6).
+- **Batched block mesh.** All treemap rects (bodies, borders, headers, file blocks) draw as a single vertex-colored mesh instead of thousands of individually tessellated rounded rects. Cushion shading is now a per-vertex gradient (free) instead of 4 overlay rects per block. Huge win on weak/software-GL machines.
+- **Bounded memory.** Directory expansion caps at 2048 children (rest collapse into a "+N more" aggregate cell), a 250k global node budget gates expansion, and prune actually releases heap capacity (the old `Vec::clear()` retained it forever, ratcheting RSS up ~90MB/min under scroll thrash until eventual out-of-memory).
+- **Faster squarify.** Row selection is O(1) per item via running min/max (was accidentally quadratic per row); verified byte-identical layouts against the old implementation.
+- **Correct hover paths.** Hovered/right-clicked nodes resolve their real path through the layout tree's index chain in O(depth). The old name+size whole-tree search ran per hover frame AND could resolve to the wrong file on collisions; Delete to Recycle Bin now always targets the exact block you clicked.
+- **Camera smoothing fixed.** Zoom/pan easing is now frame-rate independent (the old math inverted it: slow machines got slower, longer animation tails).
+- **Crash diagnostics.** Panics write to `%APPDATA%/SpaceView/panic.log` with a backtrace (the windowed exe has no console, so crashes used to vanish without a trace).
+- **Perf harness.** `--synthetic N` generates an in-memory N-file tree; `--stress S` runs a scripted camera thrash for S seconds, logging frame times, layout calls, node counts, and RSS to `stress_log.csv`. 3M-node/60s acceptance run: vsync-locked 16.7ms frames, flat RSS, zero layout recomputes at steady state.
+- **Live-scan snapshots throttled** to 2/sec (each snapshot deep-clones the partial tree; on huge drives that cost grew quadratically).
+- **Font sizes quantized** to whole pixels so zooming can't mint unbounded glyph-atlas entries.
+- **Release profile** switched from size-optimized (`opt-level="z"`) to speed-optimized (`opt-level=3`).
+
 ## v0.11.0 - Extension Breakdown Panel, Drive Picker
 - **Extension breakdown panel.** Side panel listing every file type by size, count, and percentage. Colored swatches match treemap colors. Click an extension to filter the treemap (dims non-matching files to 25% brightness). Click again to clear. Search filters the list. Resizable panel (180-350px).
 - **Drive picker.** Visual drive cards with capacity bars on the welcome screen. Shows drive name, filesystem, type, free/total space. Blue (<75%), yellow (75-90%), red (>90%) capacity bars. Click to scan. Toolbar "Drives" button opens picker dialog anytime.
