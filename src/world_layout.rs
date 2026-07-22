@@ -168,7 +168,10 @@ fn layout_children(
         .iter()
         .map(|&i| file_node.children[i].size as f64)
         .collect();
-    let has_agg = agg_items > 0 && agg_size > 0;
+    // Keep the aggregate even at size 0 (all-zero-byte tail): it gets a
+    // zero-area rect like any zero-size child, so the capped items are never
+    // silently unrepresented.
+    let has_agg = agg_items > 0;
     if has_agg {
         sizes.push(agg_size as f64);
     }
@@ -268,7 +271,10 @@ fn expand_recursive(
             // Find the corresponding FileNode child (aggregates have no
             // backing FileNode; get(AGGREGATE_INDEX) is None)
             if let Some(child_file) = file_node.children.get(node.child_index) {
-                let candidate = child_file.children.len().min(EXPAND_CHILD_CAP);
+                // Worst case materialized: (CAP-1) kept + kept "<Free Space>"
+                // + aggregate tail = CAP+1. The estimate must never undercount
+                // or live_nodes could exceed NODE_BUDGET.
+                let candidate = child_file.children.len().min(EXPAND_CHILD_CAP + 1);
                 if *live_nodes + candidate > NODE_BUDGET {
                     continue;
                 }

@@ -2334,13 +2334,22 @@ fn render_nodes(
     ext_colors: &std::collections::HashMap<String, usize>,
     selected_ext: Option<&str>,
 ) {
+    static LAST_BLOCK_VERTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     let mut batch = BlockBatch::default();
+    // Capacity hint from last frame: avoids log2(n) grow-and-memmove cycles
+    // on a mesh that reaches ~100k vertices during dense views.
+    let hint = LAST_BLOCK_VERTS.load(Ordering::Relaxed);
+    batch.mesh.vertices.reserve(hint + hint / 8);
+    batch.mesh.indices.reserve((hint + hint / 8) / 2 * 3);
+
     // Reserve the mesh's z-slot BEFORE any text so labels draw on top.
     let slot = painter.add(egui::Shape::Noop);
     for node in nodes {
         let screen_rect = camera.world_to_screen(node.world_rect, viewport);
         render_node(painter, &mut batch, node, screen_rect, viewport, theme, color_mode, time_range, ext_colors, selected_ext);
     }
+    LAST_BLOCK_VERTS.store(batch.mesh.vertices.len(), Ordering::Relaxed);
     painter.set(slot, batch.into_shape());
 }
 
@@ -2380,7 +2389,10 @@ fn render_node(
         };
         let vis = clamp_vis(inner, viewport);
         batch.push_flat(vis, col);
-        batch.push_outline(vis, 1.0, egui::Color32::from_gray(30));
+        // Outline sits OUTSIDE the body (old StrokeKind::Outside), in the
+        // BORDER_PX gutter; drawn inside `vis` it would vanish under the
+        // header fill pushed later.
+        batch.push_outline(vis.expand(1.0), 1.0, egui::Color32::from_gray(30));
 
         // Phase 2: children from the cached normalized layout
         if node.children_expanded && !node.children.is_empty() {
@@ -2429,7 +2441,10 @@ fn render_node(
                         0.0
                     };
                     let name_width = inner.width() - 8.0 - size_reserve;
-                    let max_chars = (name_width / (font_size * 0.55)).max(0.0) as usize;
+                    // Quantize to steps of 4 chars: continuously-varying widths
+                    // during zoom would otherwise mint a new truncated string
+                    // (and a new galley) nearly every frame.
+                    let max_chars = ((name_width / (font_size * 0.55)).max(0.0) as usize) & !3;
                     let label = truncate_str(&node.name, max_chars);
                     text_painter.text(
                         clipped.min + egui::vec2(3.0, 1.0),
@@ -2483,7 +2498,16 @@ fn render_node(
         } else {
             base_col
         };
-        batch.push_cushion(clamp_vis(inner, viewport), col);
+        // Cushion gradient anchors to the quad's own corners; on a block
+        // bigger than the viewport the clamped quad's corners are screen-
+        // locked and the gradient would slide while panning. Flat fill there
+        // (matches the old look: cushion bands sat offscreen at that zoom).
+        let vis = clamp_vis(inner, viewport);
+        if vis == inner {
+            batch.push_cushion(vis, col);
+        } else {
+            batch.push_flat(vis, col);
+        }
 
         if inner.width() > 35.0 && inner.height() > 14.0 {
             let text_clip = inner.intersect(viewport);
@@ -2491,7 +2515,7 @@ fn render_node(
                 let text_painter = painter.with_clip_rect(text_clip);
                 let text_col = text_color_for(col);
                 let font_size = 11.0f32.min(inner.height() - 3.0).round();
-                let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
+                let max_chars = (((inner.width() - 6.0) / (font_size * 0.55)) as usize) & !3;
                 let label = truncate_str(&node.name, max_chars);
 
                 text_painter.text(
@@ -2947,8 +2971,13 @@ fn resolve_path<'a>(root: &'a FileNode, indices: &[usize]) -> Option<&'a FileNod
 }
 
 /// Real filesystem path for a hovered node, if it has one.
+/// The name+size cross-check makes stale trails fail safe: if any future code
+/// path mutates scan_root's child order without invalidate_tree_references(),
+/// the resolved node won't match what the user actually clicked and the
+/// action no-ops instead of hitting the wrong file.
 fn hovered_real_path(root: &FileNode, info: &HoveredInfo) -> Option<PathBuf> {
     resolve_path(root, &info.path_indices)
+        .filter(|n| n.name == info.name && n.size == info.size)
         .map(|n| n.path.clone())
         .filter(|p| !p.as_os_str().is_empty())
 }

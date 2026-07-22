@@ -7,7 +7,7 @@ use crate::scanner::FileNode;
 use eframe::egui;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 // Output lands in the process cwd (run from the repo root during dev).
@@ -15,17 +15,27 @@ use std::time::Instant;
 const METRICS_CSV_PATH: &str = "stress_log.csv";
 const SUMMARY_PATH: &str = "stress_summary.txt";
 
+/// Set once when the harness is active; the hot-path counters no-op behind a
+/// single relaxed load (a plain mov) when it isn't.
+pub static ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Count of treemap::layout() invocations, reset every logging tick.
 pub static LAYOUT_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// Count of painter shape emissions (one per node actually drawn), reset every logging tick.
 pub static SHAPE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+#[inline]
 pub fn inc_layout_calls() {
-    LAYOUT_CALLS.fetch_add(1, Ordering::Relaxed);
+    if ACTIVE.load(Ordering::Relaxed) {
+        LAYOUT_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
+#[inline]
 pub fn inc_shapes() {
-    SHAPE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if ACTIVE.load(Ordering::Relaxed) {
+        SHAPE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // Panics are captured by main.rs's install_panic_log (%APPDATA%/SpaceView/panic.log).
@@ -417,6 +427,7 @@ pub struct MetricsLogger {
 
 impl MetricsLogger {
     pub fn new() -> Self {
+        ACTIVE.store(true, Ordering::Relaxed);
         let mut file = std::fs::File::create(METRICS_CSV_PATH).expect("create stress_log.csv");
         writeln!(
             file,
