@@ -6,7 +6,35 @@ mod scanner;
 mod treemap;
 mod world_layout;
 
+/// Write panics to %APPDATA%/SpaceView/panic.log. The app runs with
+/// windows_subsystem = "windows", so stderr is lost; without this, crashes
+/// in the field are undiagnosable.
+fn install_panic_log() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let dir = std::path::PathBuf::from(appdata).join("SpaceView");
+            let _ = std::fs::create_dir_all(&dir);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let msg = format!(
+                "[unix {}] SpaceView {} panic: {}\nbacktrace:\n{}\n",
+                ts,
+                env!("CARGO_PKG_VERSION"),
+                info,
+                std::backtrace::Backtrace::force_capture()
+            );
+            let _ = std::fs::write(dir.join("panic.log"), msg);
+        }
+        default(info);
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    install_panic_log();
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
         .expect("Failed to load icon");
 
