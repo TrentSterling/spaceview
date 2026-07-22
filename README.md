@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.11.0-blue" />
+  <img alt="Version" src="https://img.shields.io/github/v/release/TrentSterling/spaceview?label=version&color=blue" />
   <img alt="Rust" src="https://img.shields.io/badge/rust-2021-orange" />
   <img alt="egui" src="https://img.shields.io/badge/egui-0.31-green" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey" />
@@ -49,8 +49,8 @@
 - **Search/Filter.** Find files by name or path across List, Top Files, Duplicates, and the extension panel.
 - **Right-Click Context Menu.** Open in Explorer, Copy Path, Delete to Recycle Bin. Works in all views.
 - **Rich Tooltips.** Hover any block for name, size, percentage, file count, and full path.
-- **Free Space Block.** See how much disk space is free vs used. Toggle on/off.
-- **Tiny Binary.** 3.6 MB standalone .exe. No installer, no runtime dependencies. Just download and run.
+- **Built for huge drives.** Folder layouts are computed once and cached, the whole treemap draws as a single batched mesh, and memory is hard-capped. Multi-million-file scans stay smooth.
+- **Portable.** One ~7 MB .exe. No installer, no runtime dependencies. Download, run, delete to uninstall.
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ Grab the latest `spaceview.exe` from the [Releases](https://github.com/TrentSter
 
 ```bash
 git clone https://github.com/TrentSterling/spaceview.git
-cd SpaceView
+cd spaceview
 cargo build --release
 ```
 
@@ -85,27 +85,29 @@ The binary will be at `target/release/spaceview.exe`.
 
 SpaceView scans your selected drive or folder, then displays a [squarified treemap](https://www.win.tue.nl/~vanwijk/stm.pdf) where each rectangle's area is proportional to its file/folder size. Larger items are immediately visible. You can spot space hogs at a glance.
 
-The treemap uses **screen-space rendering** like the original SpaceMonger. Child rectangles are laid out in screen pixels with fixed 16px headers, ensuring consistent visual proportions at any zoom level.
+Each folder's layout is computed once when it comes into view, cached, and reused every frame. Every rectangle in the treemap draws as part of one batched mesh (cushion shading is a per-vertex gradient), so even tens of thousands of visible blocks cost the renderer a single draw.
 
 ### Architecture
 
 ```
 src/
-  main.rs          Entry point, eframe window setup
+  main.rs          Entry point, eframe window setup, panic log
   app.rs           Main UI: rendering, hit testing, input, themes, drive picker, extension panel
   camera.rs        Bounded camera with smooth zoom/pan/snap animations
   scanner.rs       Recursive directory scanner with progress tracking and live snapshots
-  world_layout.rs  Lazy LOD layout tree (expand/prune on demand)
+  world_layout.rs  Lazy LOD layout tree: expand/prune on demand, cached layouts, node budget
   treemap.rs       Squarified treemap algorithm (Bruls et al.)
+  stress.rs        Perf harness: --synthetic N fake tree + --stress S scripted camera thrash
 ```
 
 **Key design decisions:**
-- Screen-space child layout. No world-space proportional mismatch.
-- Two-phase rendering. Headers always drawn on top of children.
-- Lazy level-of-detail. Only expand visible directories, prune off-screen ones.
-- Bounded camera. Zoom clamped to [1x, 5000x], pan clamped to world bounds.
-- Live scanning. Partial tree snapshots streamed via mpsc channel.
+- Cached layouts. A folder's squarified subdivision depends only on its children's relative sizes, so it's computed once and reused under any camera.
+- One batched mesh. All fills, borders, and headers accumulate into a single vertex-colored mesh per frame; text draws on top.
+- Lazy level-of-detail. Only expand visible directories, prune off-screen ones, cap expansion at 2048 children per folder with a global 250k node budget.
+- Bounded camera. Zoom clamped to [1x, 5000x], pan clamped to world bounds, frame-rate-independent smoothing.
+- Live scanning. Partial tree snapshots streamed via mpsc channel, throttled to 2/sec.
 - Deferred drops. Old trees freed on background thread to prevent UI stalls.
+- Crash visibility. Panics write to `%APPDATA%/SpaceView/panic.log` with a backtrace.
 
 ## Tech Stack
 
