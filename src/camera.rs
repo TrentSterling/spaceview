@@ -45,8 +45,11 @@ fn clamp_point(center: &mut egui::Pos2, zoom: f32, viewport: egui::Rect, wr: egu
 
 const SNAP_DURATION: f32 = 0.35; // seconds
 const SCROLL_ZOOM_SPEED: f32 = 0.15;
-const PAN_SMOOTHING: f32 = 0.25; // exponential lerp factor per tick. Lower = smoother
-const ZOOM_SMOOTHING: f32 = 0.20;
+// Exponential smoothing rates per second: factor = 1 - exp(-RATE * dt).
+// Tuned to ~0.25/0.20 per frame at 60Hz (the original intent); the old code
+// computed exp(-k / dt), which inverted the behavior across frame rates.
+const PAN_RATE: f32 = 17.0;
+const ZOOM_RATE: f32 = 13.0;
 
 impl Camera {
     pub fn new(center: egui::Pos2, zoom: f32) -> Self {
@@ -145,7 +148,7 @@ impl Camera {
 
         let zoom_diff = (self.target_zoom - self.zoom).abs();
         if zoom_diff > 0.001 {
-            let factor = 1.0 - (-ZOOM_SMOOTHING / dt.max(0.001)).exp();
+            let factor = 1.0 - (-ZOOM_RATE * dt.max(0.0)).exp();
             self.zoom += (self.target_zoom - self.zoom) * factor.min(1.0);
             moving = true;
         } else if zoom_diff > 0.0 {
@@ -155,7 +158,7 @@ impl Camera {
         let cx_diff = (self.target_center.x - self.center.x).abs();
         let cy_diff = (self.target_center.y - self.center.y).abs();
         if cx_diff > 0.00001 || cy_diff > 0.00001 {
-            let factor = 1.0 - (-PAN_SMOOTHING / dt.max(0.001)).exp();
+            let factor = 1.0 - (-PAN_RATE * dt.max(0.0)).exp();
             let f = factor.min(1.0);
             self.center.x += (self.target_center.x - self.center.x) * f;
             self.center.y += (self.target_center.y - self.center.y) * f;
@@ -220,5 +223,41 @@ impl Camera {
 
         self.anim_progress = 0.0;
         self.animating = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exponential smoothing must converge identically regardless of frame
+    /// rate: error decays as exp(-RATE * total_time) whatever the dt steps.
+    #[test]
+    fn smoothing_frame_rate_independent() {
+        let vp = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 700.0));
+        let wr = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 0.7));
+
+        let mut a = Camera::new(egui::pos2(0.5, 0.35), 1.0);
+        let mut b = Camera::new(egui::pos2(0.5, 0.35), 1.0);
+        a.set_world_rect(wr);
+        b.set_world_rect(wr);
+        a.target_zoom = 100.0;
+        b.target_zoom = 100.0;
+
+        for _ in 0..60 {
+            a.tick(1.0 / 60.0, vp);
+        }
+        for _ in 0..15 {
+            b.tick(1.0 / 15.0, vp);
+        }
+
+        assert!(
+            (a.zoom - b.zoom).abs() / b.zoom < 0.05,
+            "60fps zoom {} vs 15fps zoom {} after 1 simulated second",
+            a.zoom,
+            b.zoom
+        );
+        // And both must have made real progress toward the target.
+        assert!(a.zoom > 50.0, "zoom barely moved: {}", a.zoom);
     }
 }
