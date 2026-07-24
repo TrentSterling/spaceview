@@ -152,7 +152,15 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // Asymmetric by design — white bleaches color (~15% survives at 85%
     // frost), dark preserves it. At 0 the panels vanish and the background
     // IS the raw ramp (WYSIWYG with the editor preview).
-    let panel_alpha: u8 = if gradient { (255.0 * frost(tk.dark)) as u8 } else { 255 };
+    // Light frost is remapped so the WHOLE slider travel is responsive: white
+    // above ~78% opacity is perceptually identical full-bleach (Trent: "works
+    // only at the lower values"), so light's 100% maps to 200/255 instead.
+    let f = frost(tk.dark);
+    let panel_alpha: u8 = if gradient {
+        if tk.dark { (255.0 * f) as u8 } else { (200.0 * f) as u8 }
+    } else {
+        255
+    };
     let panel = Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), panel_alpha);
 
     // Floating windows (About, dialogs, the gradient editor) carry paragraphs
