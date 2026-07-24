@@ -51,58 +51,18 @@ fn rgb_of(c: Color32) -> Rgb {
     [c.r(), c.g(), c.b()]
 }
 
-/// The default dark ground + accent ("Cyan"): a blue-tinted near-black base
-/// with the same electric-cyan family the other TrontStack apps use, so
-/// SpaceView's chrome reads as a sibling of TrontSnap/TrontEQ while its
-/// neon treemap palettes (untouched) stay the star of the show.
-fn dark_ground() -> Tokens {
-    let bg = [10u8, 14, 20];
-    let panel = [17u8, 24, 33];
-    let accent = [86u8, 204, 255];
-    Tokens {
-        dark: true,
-        bg: c32(bg),
-        panel: c32(panel),
-        text: c32([224, 236, 244]),
-        muted: c32([128, 150, 168]),
-        accent: c32(accent),
-        accent_readable: c32(accent),
-        accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
-        on_accent: c32(color::contrast_color(accent)),
-        edge: c32([33, 46, 60]),
-        hover: c32(color::mix_colors(panel, accent, 0.14)),
-    }
-}
-
-/// The default light ground ("Cyan", light mode): airy near-white with a
-/// deepened teal-cyan accent so it stays legible on paper instead of
-/// washing out.
-fn light_ground() -> Tokens {
-    let bg = [237u8, 241, 245];
-    let panel = [248u8, 250, 252];
-    let accent = [0u8, 137, 173];
-    Tokens {
-        dark: false,
-        bg: c32(bg),
-        panel: c32(panel),
-        text: c32([20, 28, 36]),
-        muted: c32([96, 113, 128]),
-        accent: c32(accent),
-        accent_readable: c32(accent),
-        accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
-        on_accent: c32(color::contrast_color(accent)),
-        edge: c32([212, 219, 227]),
-        hover: c32(color::mix_colors(panel, accent, 0.14)),
-    }
-}
+/// The house seed: TrontStack electric cyan, the family TrontSnap/TrontEQ use.
+/// "Cyan" is now just the seed we ship — it goes through the same generator as
+/// every other pick, so there is exactly ONE derivation path in the app.
+const HOUSE_SEED: Rgb = [86, 204, 255];
 
 fn ground(dark: bool) -> Tokens {
-    if dark { dark_ground() } else { light_ground() }
+    auto_theme(&[HOUSE_SEED], dark)
 }
 
 /// The live palette + gradient toggle. Starts as the default Cyan ground;
 /// `resolve()` at startup and every UI pick funnel through `set_theme()`.
-static CURRENT: LazyLock<RwLock<Tokens>> = LazyLock::new(|| RwLock::new(dark_ground()));
+static CURRENT: LazyLock<RwLock<Tokens>> = LazyLock::new(|| RwLock::new(ground(true)));
 
 /// Snapshot of the current tokens. `Tokens` is `Copy`, so call sites can hold
 /// their own copy across a frame without re-locking.
@@ -199,9 +159,20 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // like a highlighter and fought the text on bright accents (Trent-flagged,
     // white-on-cyan). Pull it toward the ground and derive the text contrast
     // FROM THE FILL ACTUALLY DRAWN, so it stays readable for any accent.
-    let sel_fill = color::mix_colors(rgb_of(tk.accent), rgb_of(tk.bg), 0.30);
+    // Built from the READABLE accent (ladder step 9), never the verbatim pick —
+    // a selected row has to host text, so it can't be whatever the user chose.
+    let sel_fill = color::mix_colors(rgb_of(tk.accent_readable), rgb_of(tk.bg), 0.30);
     v.selection.bg_fill = c32(sel_fill);
-    v.selection.stroke = Stroke::new(1.0, c32(color::contrast_color(sel_fill)));
+    // And the selected label is chosen by APCA against the fill ACTUALLY drawn,
+    // from the theme's own extremes — not a luminance-threshold guess.
+    let sel_txt = if color::apca_abs(rgb_of(tk.text), sel_fill)
+        >= color::apca_abs(rgb_of(tk.bg), sel_fill)
+    {
+        rgb_of(tk.text)
+    } else {
+        rgb_of(tk.bg)
+    };
+    v.selection.stroke = Stroke::new(1.0, c32(sel_txt));
     v.hyperlink_color = tk.accent_readable;
     v.warn_fg_color = tk.accent_readable;
     v.error_fg_color = Color32::from_rgb(220, 80, 60);
@@ -237,10 +208,21 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     w.corner_radius = r;
     w.expansion = 1.0;
 
+    // The pressed fill must be able to HOST `text`: some egui widgets paint
+    // their active label over the panel rather than over bg_fill (see the note
+    // below), so fg_stroke cannot simply become on_accent. Instead pull the
+    // accent toward the ground until body text provably reads on it — which
+    // also stops a white pick from producing an invisible pressed label.
+    let mut active_fill = rgb_of(tk.accent_readable);
+    let mut guard = 0;
+    while color::apca_abs(rgb_of(tk.text), active_fill) < color::LC_MUTED && guard < 20 {
+        active_fill = color::mix_colors(active_fill, rgb_of(tk.bg), 0.12);
+        guard += 1;
+    }
     let w = &mut v.widgets.active;
-    w.bg_fill = tk.accent;
+    w.bg_fill = c32(active_fill);
     w.weak_bg_fill = tk.accent_dim;
-    w.bg_stroke = Stroke::new(1.0, tk.accent);
+    w.bg_stroke = Stroke::new(1.0, tk.accent_readable);
     // Pressed Checkbox/SelectableLabel/RadioButton text paints over the dark
     // panel (not bg_fill), so this stays `text`, not `on_accent` — otherwise
     // it goes dark-on-dark on a dark ground.
@@ -260,63 +242,125 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
 
 // ---- theme derivation ("colormagic") --------------------------------------
 
-/// "Your accent color on the standard ground": start from the resolved
-/// dark/light ground and only swap the accent-derived fields, walking
-/// lightness (bounded) until the accent reads against the panel.
-pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
-    // DISCORD GROUND PARITY: the ground takes the accent's hue at low
-    // saturation. Ground saturation SCALES with the pick's own saturation, so
-    // "going nuts" stays coherent: a gray/black accent yields a NEUTRAL
-    // ground instead of being forced colorful.
-    let a = color::rgb_to_hsl(accent);
-    let hue = a.h;
-    let satf = (a.s / 50.0).clamp(0.0, 1.0);
-    let (bg, panel, edge, text, muted) = if dark {
-        (
-            color::hsl_to_rgb(hue, 24.0 * satf, 7.0),
-            color::hsl_to_rgb(hue, 22.0 * satf, 11.0),
-            color::hsl_to_rgb(hue, 20.0 * satf, 19.0),
-            color::hsl_to_rgb(hue, 18.0 * satf, 92.0),
-            color::hsl_to_rgb(hue, 12.0 * satf, 62.0),
-        )
-    } else {
-        // Light grounds must COMMIT to the hue: at 94-98 lightness no color
-        // survives (Trent: "random in light mode changes nothing") — pull
-        // lightness down + saturation up until the tint actually reads.
-        (
-            color::hsl_to_rgb(hue, 48.0 * satf, 86.0),
-            color::hsl_to_rgb(hue, 42.0 * satf, 92.0),
-            color::hsl_to_rgb(hue, 32.0 * satf, 74.0),
-            color::hsl_to_rgb(hue, 35.0 * satf, 13.0),
-            color::hsl_to_rgb(hue, 18.0 * satf, 38.0),
-        )
-    };
-
-    // The user's accent is kept VERBATIM (black is allowed to be black — text
-    // ON accent fills derives from contrast_color of what's actually drawn).
-    // A separate READABLE variant is walked toward legibility against the
-    // panel for the few contrast-load-bearing usages (links, hover rings).
-    let mut readable = accent;
-    let mut guard = 0;
-    while color::contrast_ratio(readable, panel) < 2.2 && guard < 14 {
-        let h = color::rgb_to_hsl(readable);
-        let l = if dark { (h.l + 6.0).min(92.0) } else { (h.l - 6.0).max(8.0) };
-        readable = color::hsl_to_rgb(h.h, h.s, l);
-        guard += 1;
-    }
-
+/// AUTO AWESOME — build a complete, guaranteed-readable token set from 1..=4
+/// seed colors.
+///
+/// The rule that makes any seed work: **the user controls hue, the system
+/// controls lightness.** `color::scale_from_seed` lays a Radix-style 12-step
+/// tonal ladder whose text steps are APCA-verified against the very grounds
+/// they will be drawn on, so text is *placed* at a readable tone rather than
+/// derived and hoped for. Proven over thousands of seeds by
+/// `color::tests::every_random_seed_yields_readable_text`.
+///
+/// Seed 0 owns the chrome; the remaining seeds feed the gradient ramp (see
+/// `gradient_pegs`), which is why 1 pick and 4 picks both produce a coherent
+/// theme.
+pub fn auto_theme(seeds: &[Rgb], dark: bool) -> Tokens {
+    let seed = seeds.first().copied().unwrap_or(HOUSE_SEED);
+    let sc = color::scale_from_seed(seed, dark);
+    // Step 1 is the extreme end of the ladder, step 2 one notch in. On DARK the
+    // app bg is the darkest thing and panels lift off it; on LIGHT it inverts —
+    // cards float LIGHTER than a slightly tinted app background, the way every
+    // paper-style UI works. Same two steps, swapped by mode.
+    let (bg, panel) = if dark { (sc.step(1), sc.step(2)) } else { (sc.step(2), sc.step(1)) };
     Tokens {
         dark,
         bg: c32(bg),
         panel: c32(panel),
-        text: c32(text),
-        muted: c32(muted),
-        accent: c32(accent),
-        accent_readable: c32(readable),
-        accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
-        on_accent: c32(color::contrast_color(accent)),
-        edge: c32(edge),
-        hover: c32(color::mix_colors(panel, readable, 0.14)),
+        text: c32(sc.step(12)),
+        muted: c32(sc.step(11)),
+        // The pick stays VERBATIM — black is allowed to be black. Only the
+        // *derived* roles come off the guaranteed ladder.
+        accent: c32(seed),
+        accent_readable: c32(sc.step(9)),
+        accent_dim: c32(color::mix_colors(sc.step(9), sc.step(1), 0.45)),
+        // Text on the accent is chosen by APCA against what is ACTUALLY drawn,
+        // so even a midtone pick gets a label that reads.
+        on_accent: c32(color::on_color(seed, &sc)),
+        edge: c32(sc.step(6)),
+        hover: c32(sc.step(4)),
+    }
+}
+
+/// Single-accent entry point (the big picker, premades, presets, Random all
+/// funnel here). Thin wrapper so every source shares one guaranteed path.
+pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
+    auto_theme(&[accent], dark)
+}
+
+#[cfg(test)]
+mod auto_theme_tests {
+    use super::*;
+
+    fn lc(a: Color32, b: Color32) -> f32 {
+        color::apca_abs(rgb_of(a), rgb_of(b))
+    }
+
+    /// Every token set the app can produce must be readable on its own grounds —
+    /// the app-level counterpart to color.rs's scale proof.
+    #[test]
+    fn generated_tokens_are_readable() {
+        let mut rng = color::Rng::new(0xA11_600D);
+        let mut seeds = vec![HOUSE_SEED, [0, 0, 0], [255, 255, 255], [128, 128, 128]];
+        for _ in 0..400 {
+            seeds.push([
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+            ]);
+        }
+        for seed in seeds {
+            for dark in [true, false] {
+                let tk = auto_theme(&[seed], dark);
+                assert!(
+                    lc(tk.text, tk.bg) >= color::LC_TEXT_MIN,
+                    "text on bg unreadable for {seed:?} dark={dark}: {:.1}",
+                    lc(tk.text, tk.bg)
+                );
+                assert!(
+                    lc(tk.text, tk.panel) >= color::LC_TEXT_MIN,
+                    "text on panel unreadable for {seed:?} dark={dark}"
+                );
+                assert!(
+                    lc(tk.text, tk.hover) >= color::LC_TEXT_MIN,
+                    "text on hover fill unreadable for {seed:?} dark={dark}"
+                );
+                assert!(
+                    lc(tk.muted, tk.panel) >= color::LC_MUTED - 0.5,
+                    "muted on panel unreadable for {seed:?} dark={dark}"
+                );
+                // The label on an accent fill must clear large/bold at minimum.
+                assert!(
+                    lc(tk.on_accent, tk.accent) >= 45.0,
+                    "on_accent unreadable for {seed:?} dark={dark}: {:.1}",
+                    lc(tk.on_accent, tk.accent)
+                );
+            }
+        }
+    }
+
+    /// Prints the shipped "Cyan" theme so a human can compare it against the
+    /// hand-placed values it replaced. Run with `--nocapture`.
+    #[test]
+    fn house_theme_values() {
+        for dark in [true, false] {
+            let tk = auto_theme(&[HOUSE_SEED], dark);
+            let h = |c: Color32| color::rgb_to_hex(rgb_of(c));
+            println!(
+                "{} bg={} panel={} hover={} edge={} muted={} text={} accent_readable={} | text-on-bg Lc {:.1}, text-on-panel Lc {:.1}, muted Lc {:.1}",
+                if dark { "DARK " } else { "LIGHT" },
+                h(tk.bg),
+                h(tk.panel),
+                h(tk.hover),
+                h(tk.edge),
+                h(tk.muted),
+                h(tk.text),
+                h(tk.accent_readable),
+                lc(tk.text, tk.bg),
+                lc(tk.text, tk.panel),
+                lc(tk.muted, tk.panel),
+            );
+        }
     }
 }
 

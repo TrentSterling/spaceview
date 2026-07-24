@@ -481,27 +481,27 @@ pub fn scale_from_seed(seed: Rgb, dark: bool) -> Scale {
         steps[i] = oklch_to_rgb(l, c, h);
     }
 
-    // Text sits on grounds 1-3 AND on hovered/active widget fills (4-5), so the
-    // hardest case is step 5 — the ground closest in lightness to the text.
+    // Body text aims for the PREFERRED Lc against the ground it actually lives
+    // on (the panel), and merely guarantees the MINIMUM against transient
+    // interactive fills. Chasing Lc 90 against a bright hover fill drags light
+    // themes to pure black and burns off all their tint for no real gain.
+    let primary_ground = steps[1];
     let worst_ground = steps[4];
-    steps[11] = walk_to_target(
-        ls[11],
-        (c_seed * cs[11]).min(C_CEIL),
-        h,
-        worst_ground,
-        LC_TEXT,
-        LC_TEXT_MIN,
-        dark,
-    );
-    steps[10] = walk_to_target(
-        ls[10],
-        (c_seed * cs[10]).min(C_CEIL),
-        h,
-        worst_ground,
-        LC_MUTED,
-        LC_MUTED,
-        dark,
-    );
+    let c_text = (c_seed * cs[11]).min(C_CEIL);
+    let mut text = walk_to_target(ls[11], c_text, h, primary_ground, LC_TEXT, LC_TEXT_MIN, dark);
+    if apca_abs(text, worst_ground) < LC_TEXT_MIN {
+        let [l_now, c_now, _] = rgb_to_oklch(text);
+        text = walk_to_target(l_now, c_now, h, worst_ground, LC_TEXT_MIN, LC_TEXT_MIN, dark);
+    }
+    steps[11] = text;
+
+    let c_muted = (c_seed * cs[10]).min(C_CEIL);
+    let mut muted = walk_to_target(ls[10], c_muted, h, primary_ground, LC_MUTED, LC_MUTED, dark);
+    if apca_abs(muted, worst_ground) < LC_MUTED {
+        let [l_now, c_now, _] = rgb_to_oklch(muted);
+        muted = walk_to_target(l_now, c_now, h, worst_ground, LC_MUTED, LC_MUTED, dark);
+    }
+    steps[10] = muted;
 
     Scale { steps, dark }
 }
