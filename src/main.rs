@@ -5,6 +5,7 @@ mod camera;
 mod scanner;
 mod stress;
 mod treemap;
+mod window_chrome;
 mod world_layout;
 
 /// Write panics to %APPDATA%/SpaceView/panic.log. The app runs with
@@ -50,7 +51,9 @@ fn main() -> eframe::Result<()> {
     let mut vp = eframe::egui::ViewportBuilder::default()
         .with_title("SpaceView")
         .with_icon(std::sync::Arc::new(icon))
-        .with_min_inner_size([400.0, 300.0]);
+        .with_min_inner_size([400.0, 300.0])
+        // Frameless: the top toolbar IS the title bar. See window_chrome.rs.
+        .with_decorations(false);
 
     // Restore saved window size, or default to 1024x700
     if let (Some(w), Some(h)) = (prefs.window_w, prefs.window_h) {

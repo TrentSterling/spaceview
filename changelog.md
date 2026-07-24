@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.13.0 - custom window chrome
+- Frameless window: the toolbar is now the title bar, no more stock Windows caption bar wasting space above it.
+- Min/max/close are painter-drawn buttons in an always-on-top opaque overlay, so a cramped toolbar can never draw through the caption controls. Drag anywhere on the empty toolbar strip (or the SpaceView wordmark) to move the window; edges and corners resize it.
+- Trade-off: loses the Win11 snap flyout on maximize-hover, keeps drag-to-edge Aero Snap. Same call made for TrontSnap, Boxel, and TrontEQ.
+
 ## v0.12.0 - Renderer Overhaul: Cached Layouts, Bounded Memory, Crashproofing
 - **Cached treemap layouts.** Each directory's squarified layout is computed once at expansion (normalized, camera-independent) and reused every frame by render, hit test, and minimap. Previously all three re-ran the full layout algorithm per visible directory per frame (measured at 100-316 layout calls/frame during zoom thrash; now 0-6).
 - **Batched block mesh.** All treemap rects (bodies, borders, headers, file blocks) draw as a single vertex-colored mesh instead of thousands of individually tessellated rounded rects. Cushion shading is now a per-vertex gradient (free) instead of 4 overlay rects per block. Huge win on weak/software-GL machines.

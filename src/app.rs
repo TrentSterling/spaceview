@@ -1,6 +1,7 @@
 use crate::camera::Camera;
 use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory_live};
 use crate::treemap;
+use crate::window_chrome;
 use crate::world_layout::{LayoutNode, WorldLayout};
 use eframe::egui;
 use std::path::PathBuf;
@@ -990,7 +991,13 @@ impl eframe::App for SpaceViewApp {
         // ---- Top panel ----
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("SpaceView");
+                // Wordmark doubles as a window drag handle (custom chrome: no OS
+                // title bar), so a packed toolbar always has a grab point.
+                let wm = ui.add(
+                    egui::Label::new(egui::RichText::new("SpaceView").heading())
+                        .sense(egui::Sense::click_and_drag()),
+                );
+                window_chrome::drag_window(ctx, &wm);
                 ui.separator();
 
                 if ui.button("Open Folder...").clicked() {
@@ -1095,8 +1102,14 @@ impl eframe::App for SpaceViewApp {
                     ui.selectable_value(&mut self.view_mode, ViewMode::Duplicates, dup_label);
                 }
 
-                // Right-aligned About button + Free Space toggle
+                // Right-aligned About button + Free Space toggle. FIRST reserve
+                // the caption overlay's footprint (min/max/close float on top in
+                // window_chrome::caption_overlay) so About + search sit left of
+                // it — a second right_to_left block gets ZERO width here because
+                // this one is already flush against the panel edge (review
+                // finding, verified against egui 0.31 internals).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(window_chrome::CAPTION_W);
                     if ui.button("About").clicked() {
                         self.show_about = !self.show_about;
                     }
@@ -1132,6 +1145,10 @@ impl eframe::App for SpaceViewApp {
                             self.invalidate_tree_references();
                         }
                     }
+                    // Whatever width remains between the left-side controls and
+                    // this right-aligned group is the window drag strip.
+                    let gap = ui.available_rect_before_wrap();
+                    window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
                 });
             });
 
@@ -1211,6 +1228,8 @@ impl eframe::App for SpaceViewApp {
                 });
             }
         });
+        window_chrome::caption_overlay(ctx);
+        window_chrome::edge_resize(ctx);
 
         // ---- Status bar ----
         if self.scan_root.is_some() {
