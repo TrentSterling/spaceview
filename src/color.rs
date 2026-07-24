@@ -273,6 +273,255 @@ pub fn contrast_color(bg: Rgb) -> Rgb {
     }
 }
 
+// ============ APCA (Accessible Perceptual Contrast Algorithm) ============
+//
+// The WCAG 2.1 ratio above is the legal standard but it is measurably WRONG in
+// dark mode: it treats contrast as symmetric, so light-grey-on-black "passes"
+// while reading as mud, and midtones sail through that visibly vanish. APCA is
+// polarity-aware (different exponents for dark-on-light vs light-on-dark) and is
+// what modern generators (Radix, Material, egui_colors) use. Constants are
+// SA98G / APCA-W3 0.1.9, verified against Myndex's reference implementation.
+//
+// Lc reference: |Lc| >= 90 preferred body text, 75 minimum body text, 60
+// headline/large, 45 large-bold, 30 any non-text (icons, borders), < 15 invisible.
+
+const APCA_TRC: f32 = 2.4;
+const APCA_NORM_BG: f32 = 0.56;
+const APCA_NORM_TXT: f32 = 0.57;
+const APCA_REV_TXT: f32 = 0.62;
+const APCA_REV_BG: f32 = 0.65;
+const APCA_BLK_THRS: f32 = 0.022;
+const APCA_BLK_CLMP: f32 = 1.414;
+const APCA_SCALE: f32 = 1.14;
+const APCA_LO_OFFSET: f32 = 0.027;
+const APCA_DELTA_Y_MIN: f32 = 0.0005;
+const APCA_LO_CLIP: f32 = 0.1;
+
+/// APCA screen luminance (its own TRC, NOT the WCAG piecewise curve).
+fn apca_y(rgb: Rgb) -> f32 {
+    let f = |c: u8| (c as f32 / 255.0).powf(APCA_TRC);
+    0.2126729 * f(rgb[0]) + 0.7151522 * f(rgb[1]) + 0.0721750 * f(rgb[2])
+}
+
+/// APCA lightness contrast (Lc) for `text` drawn on `bg`. The SIGN encodes
+/// polarity (positive = dark text on light, negative = light text on dark);
+/// callers almost always want [`apca_abs`].
+pub fn apca_lc(text: Rgb, bg: Rgb) -> f32 {
+    let soft_black = |y: f32| {
+        if y < APCA_BLK_THRS {
+            y + (APCA_BLK_THRS - y).powf(APCA_BLK_CLMP)
+        } else {
+            y
+        }
+    };
+    let ytxt = soft_black(apca_y(text));
+    let ybg = soft_black(apca_y(bg));
+    if (ybg - ytxt).abs() < APCA_DELTA_Y_MIN {
+        return 0.0;
+    }
+    if ybg > ytxt {
+        // Normal polarity: dark text on a lighter background.
+        let sapc = (ybg.powf(APCA_NORM_BG) - ytxt.powf(APCA_NORM_TXT)) * APCA_SCALE;
+        if sapc < APCA_LO_CLIP { 0.0 } else { (sapc - APCA_LO_OFFSET) * 100.0 }
+    } else {
+        // Reverse polarity: light text on a darker background.
+        let sapc = (ybg.powf(APCA_REV_BG) - ytxt.powf(APCA_REV_TXT)) * APCA_SCALE;
+        if sapc > -APCA_LO_CLIP { 0.0 } else { (sapc + APCA_LO_OFFSET) * 100.0 }
+    }
+}
+
+/// Magnitude of the APCA Lc score — "how readable is this pair", polarity-free.
+pub fn apca_abs(text: Rgb, bg: Rgb) -> f32 {
+    apca_lc(text, bg).abs()
+}
+
+// ============ AUTO AWESOME: guaranteed-readable theme scales ============
+//
+// The rule that makes "any color in, readable UI out" work:
+//
+//     THE USER CONTROLS HUE. THE SYSTEM CONTROLS LIGHTNESS.
+//
+// A seed contributes its hue and its chroma character; every functional step's
+// LIGHTNESS comes from a fixed tonal ladder this module owns. Text is therefore
+// never derived-and-hoped: it is PLACED at a tone far enough from the ground
+// that it cannot be invisible, then APCA-verified and walked toward the extreme
+// if some gamut edge case still falls short. Feed it vomit green, feed it pure
+// black, feed it four clashing colors — the hues move, the structure does not.
+//
+// The 12 steps follow the Radix functional scale (the vocabulary Radix UI and
+// egui_colors both use), so every step has exactly one job:
+//    1 app background     5 active UI fill    9  solid (the accent)
+//    2 subtle background  6 subtle border     10 solid hover
+//    3 UI element fill    7 border            11 low-contrast text
+//    4 hover UI fill      8 border hover      12 high-contrast text
+
+/// Preferred APCA Lc for body text against its ground.
+pub const LC_TEXT: f32 = 90.0;
+/// Hard floor for body text — below this the walk takes the extreme instead.
+pub const LC_TEXT_MIN: f32 = 75.0;
+/// Target for low-contrast ("muted") text.
+pub const LC_MUTED: f32 = 60.0;
+/// Target for non-text UI: solid fills, borders, focus rings.
+pub const LC_NONTEXT: f32 = 30.0;
+
+/// The system-owned lightness ladder (OKLCH L per step). Not user-tunable: this
+/// IS the guarantee.
+const L_DARK: [f32; 12] = [
+    0.17, 0.21, 0.25, 0.29, 0.33, 0.38, 0.44, 0.53, 0.62, 0.68, 0.77, 0.95,
+];
+const L_LIGHT: [f32; 12] = [
+    0.99, 0.975, 0.95, 0.925, 0.90, 0.87, 0.83, 0.76, 0.62, 0.56, 0.52, 0.24,
+];
+
+/// Fraction of the seed's chroma each step keeps. Grounds stay tinted (not
+/// painted), the solid steps carry the full accent, text is nearly neutral.
+const C_DARK: [f32; 12] = [
+    0.35, 0.42, 0.50, 0.55, 0.58, 0.55, 0.52, 0.55, 1.00, 1.00, 0.30, 0.16,
+];
+const C_LIGHT: [f32; 12] = [
+    0.30, 0.38, 0.45, 0.50, 0.55, 0.55, 0.55, 0.60, 1.00, 1.00, 0.35, 0.22,
+];
+
+/// Absolute chroma ceiling for the three ground steps, so even a screaming seed
+/// yields a ground you can stare at for hours. Tint, not paint.
+const C_GROUND_CEIL: f32 = 0.045;
+/// Overall chroma ceiling — past this OKLCH starts clipping the sRGB gamut and
+/// the round-trip stops being trustworthy.
+const C_CEIL: f32 = 0.33;
+
+/// A Radix-style 12-step functional scale whose text steps are APCA-guaranteed
+/// against its own grounds.
+#[derive(Clone, Copy)]
+pub struct Scale {
+    pub steps: [Rgb; 12],
+    pub dark: bool,
+}
+
+impl Scale {
+    /// 1-based step access, matching the Radix numbering used in the docs above.
+    pub fn step(&self, n: usize) -> Rgb {
+        self.steps[n.clamp(1, 12) - 1]
+    }
+}
+
+/// Push a color's lightness away from `bg` until APCA says it passes `target`,
+/// shedding chroma as it approaches the extremes (high chroma caps achievable
+/// luminance). Returns the best candidate found; falls back to pure white/black,
+/// which is what makes the guarantee unconditional rather than aspirational.
+fn walk_to_target(
+    start_l: f32,
+    start_c: f32,
+    h: f32,
+    bg: Rgb,
+    target: f32,
+    floor: f32,
+    dark: bool,
+) -> Rgb {
+    let mut l = start_l;
+    let mut c = start_c;
+    let mut best = oklch_to_rgb(l, c, h);
+    let mut best_lc = apca_abs(best, bg);
+    if best_lc >= target {
+        return best;
+    }
+    for _ in 0..48 {
+        l = if dark { (l + 0.015).min(1.0) } else { (l - 0.015).max(0.0) };
+        c *= 0.94;
+        let cand = oklch_to_rgb(l, c, h);
+        let lc = apca_abs(cand, bg);
+        if lc > best_lc {
+            best_lc = lc;
+            best = cand;
+        }
+        if lc >= target {
+            return cand;
+        }
+    }
+    if best_lc < floor {
+        let extreme: Rgb = if dark { [255, 255, 255] } else { [0, 0, 0] };
+        if apca_abs(extreme, bg) > best_lc {
+            return extreme;
+        }
+    }
+    best
+}
+
+/// Build the 12-step scale for a seed color. This is the whole AUTO AWESOME
+/// mechanism: tones from the ladder, hue/chroma from the seed, text steps
+/// APCA-enforced against the hardest ground they will ever sit on.
+pub fn scale_from_seed(seed: Rgb, dark: bool) -> Scale {
+    let [_, c_seed, h] = rgb_to_oklch(seed);
+    let ls = if dark { &L_DARK } else { &L_LIGHT };
+    let cs = if dark { &C_DARK } else { &C_LIGHT };
+
+    let mut steps = [[0u8; 3]; 12];
+    for i in 0..12 {
+        let mut c = c_seed * cs[i];
+        if i < 3 {
+            c = c.min(C_GROUND_CEIL);
+        }
+        steps[i] = oklch_to_rgb(ls[i], c.min(C_CEIL), h);
+    }
+
+    // Steps 9/10 are SOLID FILLS that carry labels (buttons, selected chips), so
+    // they must be able to HOST text. There is a crossover band (Y ~ 0.3) where
+    // neither white nor black reads well; nudge the fill's lightness out of it,
+    // toward the ground's side so the fill stays theme-coherent.
+    for i in [8usize, 9] {
+        let c = (c_seed * cs[i]).min(C_CEIL);
+        let mut l = ls[i];
+        for _ in 0..24 {
+            let cand = oklch_to_rgb(l, c, h);
+            let best = apca_abs([255, 255, 255], cand).max(apca_abs([0, 0, 0], cand));
+            if best >= LC_MUTED {
+                break;
+            }
+            l = if dark { (l - 0.02).max(0.30) } else { (l + 0.02).min(0.80) };
+        }
+        steps[i] = oklch_to_rgb(l, c, h);
+    }
+
+    // Text sits on grounds 1-3 AND on hovered/active widget fills (4-5), so the
+    // hardest case is step 5 — the ground closest in lightness to the text.
+    let worst_ground = steps[4];
+    steps[11] = walk_to_target(
+        ls[11],
+        (c_seed * cs[11]).min(C_CEIL),
+        h,
+        worst_ground,
+        LC_TEXT,
+        LC_TEXT_MIN,
+        dark,
+    );
+    steps[10] = walk_to_target(
+        ls[10],
+        (c_seed * cs[10]).min(C_CEIL),
+        h,
+        worst_ground,
+        LC_MUTED,
+        LC_MUTED,
+        dark,
+    );
+
+    Scale { steps, dark }
+}
+
+/// The text color to draw ON an arbitrary fill, chosen by APCA from the scale's
+/// own extremes and only falling back to pure white/black when the fill sits in
+/// the murderous midtones. Supersedes [`contrast_color`]'s luminance threshold
+/// guess for anything that has a scale available.
+pub fn on_color(fill: Rgb, scale: &Scale) -> Rgb {
+    let hi = scale.step(12);
+    let lo = scale.step(1);
+    let cand = if apca_abs(hi, fill) >= apca_abs(lo, fill) { hi } else { lo };
+    if apca_abs(cand, fill) >= LC_TEXT_MIN {
+        return cand;
+    }
+    let white: Rgb = [255, 255, 255];
+    let black: Rgb = [0, 0, 0];
+    if apca_abs(white, fill) >= apca_abs(black, fill) { white } else { black }
+}
+
 // ============ HARMONY GENERATION ============
 
 fn clamp_hsl(h: f32, s: f32, l: f32) -> Hsl {
@@ -668,6 +917,151 @@ mod tests {
     fn delta_e_identity_is_zero() {
         assert_eq!(delta_e([123, 45, 200], [123, 45, 200]), 0.0);
         assert_eq!(delta_e([0, 0, 0], [0, 0, 0]), 0.0);
+    }
+
+    // ---- APCA ----------------------------------------------------------
+
+    #[test]
+    fn apca_matches_reference_extremes() {
+        // The two canonical values from the APCA-W3 reference implementation.
+        let black_on_white = apca_lc([0, 0, 0], [255, 255, 255]);
+        let white_on_black = apca_lc([255, 255, 255], [0, 0, 0]);
+        assert!(
+            (black_on_white - 106.04).abs() < 1.0,
+            "black on white should be ~106.04, got {black_on_white}"
+        );
+        assert!(
+            (white_on_black + 107.88).abs() < 1.0,
+            "white on black should be ~-107.88, got {white_on_black}"
+        );
+        // Polarity is signed: dark-on-light positive, light-on-dark negative.
+        assert!(black_on_white > 0.0 && white_on_black < 0.0);
+    }
+
+    #[test]
+    fn apca_identical_colors_score_zero() {
+        for c in [[0, 0, 0], [255, 255, 255], [90, 140, 210], [18, 22, 30]] {
+            assert_eq!(apca_lc(c, c), 0.0);
+        }
+    }
+
+    // ---- AUTO AWESOME: the guarantee ------------------------------------
+
+    /// THE PROOF. Thousands of arbitrary seeds — including the pathological ones
+    /// a user can actually pick — must ALL produce a scale whose text is
+    /// readable against every ground it can be drawn on. If this test ever
+    /// fails, the "any color in, readable UI out" promise is broken.
+    #[test]
+    fn every_random_seed_yields_readable_text() {
+        let mut rng = Rng::new(0xC0FFEE_1234_5678);
+        let mut worst_text = f32::MAX;
+        let mut worst_muted = f32::MAX;
+        let mut worst_seed = [0u8; 3];
+
+        // Pathological picks first, then a broad random sweep.
+        let mut seeds: Vec<Rgb> = vec![
+            [0, 0, 0],       // pure black
+            [255, 255, 255], // pure white
+            [128, 128, 128], // the murderous midtone
+            [255, 255, 0],   // max-luminance yellow
+            [0, 0, 255],     // min-luminance saturated blue
+            [1, 1, 1],
+            [254, 254, 250],
+        ];
+        for _ in 0..2000 {
+            seeds.push([
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+            ]);
+        }
+
+        for seed in seeds {
+            for dark in [true, false] {
+                let sc = scale_from_seed(seed, dark);
+                let text = sc.step(12);
+                let muted = sc.step(11);
+                // Every ground body text can land on: app bg, subtle bg, UI
+                // fill, hover fill, active fill.
+                for g in 1..=5 {
+                    let lc = apca_abs(text, sc.step(g));
+                    if lc < worst_text {
+                        worst_text = lc;
+                        worst_seed = seed;
+                    }
+                    assert!(
+                        lc >= LC_TEXT_MIN,
+                        "body text unreadable: seed {seed:?} dark={dark} step{g} Lc={lc:.1}"
+                    );
+                    let lm = apca_abs(muted, sc.step(g));
+                    worst_muted = worst_muted.min(lm);
+                    assert!(
+                        lm >= LC_MUTED - 0.5,
+                        "muted text unreadable: seed {seed:?} dark={dark} step{g} Lc={lm:.1}"
+                    );
+                }
+            }
+        }
+        println!(
+            "worst body-text Lc {worst_text:.1} (seed {worst_seed:?}), worst muted Lc {worst_muted:.1}"
+        );
+    }
+
+    /// Solid fills (steps 9/10) carry button and chip labels, so SOME text color
+    /// must sit on them at large/bold readability or better.
+    #[test]
+    fn solid_fills_can_host_labels() {
+        let mut rng = Rng::new(0xBADC0DE_9999);
+        let mut worst = f32::MAX;
+        for _ in 0..1000 {
+            let seed = [
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+            ];
+            for dark in [true, false] {
+                let sc = scale_from_seed(seed, dark);
+                for fill_step in [9usize, 10] {
+                    let fill = sc.step(fill_step);
+                    let lc = apca_abs(on_color(fill, &sc), fill);
+                    worst = worst.min(lc);
+                    assert!(
+                        lc >= 45.0,
+                        "no readable label color for solid fill: seed {seed:?} dark={dark} step{fill_step} Lc={lc:.1}"
+                    );
+                }
+            }
+        }
+        println!("worst solid-fill label Lc {worst:.1}");
+    }
+
+    /// `on_color`'s real contract: it either clears the body-text bar — in which
+    /// case it is ALLOWED to prefer the theme's own tinted text over a colder
+    /// pure white/black, for coherence — or it does the best that is physically
+    /// possible. What it may never be is BOTH unreadable and worse than the
+    /// naive luminance guess.
+    #[test]
+    fn on_color_is_readable_or_optimal() {
+        let mut rng = Rng::new(0x5EED_5EED);
+        for _ in 0..500 {
+            let seed = [
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+                rng.range(0, 255) as u8,
+            ];
+            for dark in [true, false] {
+                let sc = scale_from_seed(seed, dark);
+                for s in 1..=12 {
+                    let fill = sc.step(s);
+                    let chosen = apca_abs(on_color(fill, &sc), fill);
+                    let naive = apca_abs(contrast_color(fill), fill);
+                    assert!(
+                        chosen >= LC_TEXT_MIN || chosen >= naive - 0.01,
+                        "on_color both unreadable and beaten on {fill:?}: {chosen:.1} vs naive {naive:.1}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
