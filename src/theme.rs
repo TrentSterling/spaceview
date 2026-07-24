@@ -503,9 +503,15 @@ pub fn set_gradient_cfg(cfg: GradientCfg) {
 pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
     let cfg = gradient_cfg();
 
-    // Custom mode: the user's exact colors, no adult supervision.
+    // Custom mode: SLOT 0 IS THE ACCENT (linked, always participates — the
+    // smart-slot rule: the primary color can never be missing from the ramp).
+    // Slots 1..N are the user's exact colors, no adult supervision.
     if cfg.preset == -2 {
-        return cfg.custom[..(cfg.pegs.clamp(2, 4) as usize)].to_vec();
+        let n = cfg.pegs.clamp(2, 4) as usize;
+        let mut pegs: Vec<Rgb> = Vec::with_capacity(n);
+        pegs.push(rgb_of(tk.accent));
+        pegs.extend_from_slice(&cfg.custom[1..n]);
+        return pegs;
     }
 
     // Curated preset: designed stops used verbatim (dark), lifted toward
@@ -606,4 +612,13 @@ pub fn ramp_sample(tk: &Tokens, t: f32) -> Color32 {
     let cfg = gradient_cfg();
     let pegs = gradient_pegs(tk);
     c32(color::mix_colors(rgb_of(tk.bg), ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0)))
+}
+
+/// The wash as actually PERCEIVED through the current frost (panel compositing
+/// included) — so the editor preview can show reality, not just the raw ramp.
+pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
+    let wash = ramp_sample(tk, t);
+    let f = frost(tk.dark);
+    let alpha = if tk.dark { f } else { f * (200.0 / 255.0) };
+    c32(color::mix_colors(rgb_of(wash), rgb_of(tk.panel), alpha))
 }

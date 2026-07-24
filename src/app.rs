@@ -1426,23 +1426,37 @@ impl eframe::App for SpaceViewApp {
                                 let mut cfg = theme::gradient_cfg();
                                 let mut dirty = false;
 
-                                // Live preview ramp (the composited result).
+                                // Live preview: TOP band = the raw wash, BOTTOM
+                                // band = the wash as perceived through current
+                                // frost — preview == background by construction
+                                // (the smart-slot invariant, no phantoms).
                                 let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(ui.available_width(), 20.0),
+                                    egui::vec2(ui.available_width(), 26.0),
                                     egui::Sense::hover(),
                                 );
                                 const SLICES: usize = 48;
+                                let mid_y = rect.top() + rect.height() * 0.5;
                                 for i in 0..SLICES {
                                     let t0 = i as f32 / SLICES as f32;
                                     let t1 = (i + 1) as f32 / SLICES as f32;
-                                    let r = egui::Rect::from_min_max(
-                                        egui::pos2(rect.left() + rect.width() * t0, rect.top()),
-                                        egui::pos2(rect.left() + rect.width() * t1, rect.bottom()),
+                                    let tm = (t0 + t1) * 0.5;
+                                    let x0 = rect.left() + rect.width() * t0;
+                                    let x1 = rect.left() + rect.width() * t1;
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(x0, rect.top()),
+                                            egui::pos2(x1, mid_y),
+                                        ),
+                                        0.0,
+                                        theme::ramp_sample(&tk, tm),
                                     );
                                     ui.painter().rect_filled(
-                                        r,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(x0, mid_y),
+                                            egui::pos2(x1, rect.bottom()),
+                                        ),
                                         0.0,
-                                        theme::ramp_sample(&tk, (t0 + t1) * 0.5),
+                                        theme::ramp_sample_frosted(&tk, tm),
                                     );
                                 }
                                 ui.painter().rect_stroke(
@@ -1625,7 +1639,26 @@ impl eframe::App for SpaceViewApp {
                                         }
                                     });
                                     ui.horizontal(|ui| {
-                                        for i in 0..(cfg.pegs.clamp(2, 4) as usize) {
+                                        // SLOT 0 IS THE ACCENT (linked): editing
+                                        // it rethemes the app; it always
+                                        // participates in the ramp. Slots 1..N
+                                        // are free pegs.
+                                        let mut a = theme::t().accent;
+                                        if ui
+                                            .color_edit_button_srgba(&mut a)
+                                            .on_hover_text(
+                                                "Slot 1 = your theme accent (linked)",
+                                            )
+                                            .changed()
+                                        {
+                                            let rgb = [a.r(), a.g(), a.b()];
+                                            self.theme_name = "Custom".to_string();
+                                            self.theme_accent = Some(color::rgb_to_hex(rgb));
+                                            let tk2 = theme::from_accent(rgb, self.dark_mode);
+                                            theme::set_theme(ui.ctx(), tk2, self.gradient);
+                                            dirty = true;
+                                        }
+                                        for i in 1..(cfg.pegs.clamp(2, 4) as usize) {
                                             let mut c = egui::Color32::from_rgb(
                                                 cfg.custom[i][0],
                                                 cfg.custom[i][1],
