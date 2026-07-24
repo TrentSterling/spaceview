@@ -148,12 +148,11 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // bisect `Visuals::light()`'s ~30 fields for one that affects background-
     // layer alpha compositing specifically, or paint a Window instead of a
     // TopBottomPanel/CentralPanel background layer shape and compare.
-    // Frost is ASYMMETRIC by mode (root cause of "light themes don't tint at
-    // all", verified by pixel math on a live capture): dark panels over a
-    // colorful wash preserve hue, but WHITE at 216 alpha bleaches any color
-    // to ~15% — invisible. Light mode gets much thinner frost so the wash
-    // survives; dark text on a light panel stays readable regardless.
-    let panel_alpha: u8 = if gradient { if tk.dark { 216 } else { 150 } } else { 255 };
+    // FROST (user knob, mode-aware defaults): panel opacity over the wash.
+    // Asymmetric by design — white bleaches color (~15% survives at 85%
+    // frost), dark preserves it. At 0 the panels vanish and the background
+    // IS the raw ramp (WYSIWYG with the editor preview).
+    let panel_alpha: u8 = if gradient { (255.0 * frost(tk.dark)) as u8 } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), panel_alpha);
 
     // Floating windows (About, dialogs, the gradient editor) carry paragraphs
@@ -273,12 +272,15 @@ pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
             color::hsl_to_rgb(hue, 12.0 * satf, 62.0),
         )
     } else {
+        // Light grounds must COMMIT to the hue: at 94-98 lightness no color
+        // survives (Trent: "random in light mode changes nothing") — pull
+        // lightness down + saturation up until the tint actually reads.
         (
-            color::hsl_to_rgb(hue, 35.0 * satf, 94.0),
-            color::hsl_to_rgb(hue, 30.0 * satf, 98.0),
-            color::hsl_to_rgb(hue, 20.0 * satf, 84.0),
-            color::hsl_to_rgb(hue, 30.0 * satf, 12.0),
-            color::hsl_to_rgb(hue, 12.0 * satf, 42.0),
+            color::hsl_to_rgb(hue, 48.0 * satf, 86.0),
+            color::hsl_to_rgb(hue, 42.0 * satf, 92.0),
+            color::hsl_to_rgb(hue, 32.0 * satf, 74.0),
+            color::hsl_to_rgb(hue, 35.0 * satf, 13.0),
+            color::hsl_to_rgb(hue, 18.0 * satf, 38.0),
         )
     };
 
@@ -312,7 +314,7 @@ pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
 
 /// Pick the most saturated color in a list — the one swatch a palette (or a
 /// generated harmony/flavor spread) would read as its "accent" at a glance.
-fn most_saturated(colors: &[Rgb]) -> Option<Rgb> {
+pub fn most_saturated(colors: &[Rgb]) -> Option<Rgb> {
     colors
         .iter()
         .copied()
@@ -461,6 +463,24 @@ pub const GRADIENT_PRESETS: &[(&str, &[&str])] = &[
 ];
 
 static GRAD_CFG: LazyLock<RwLock<GradientCfg>> = LazyLock::new(|| RwLock::new(GradientCfg::default()));
+
+/// FROST: panel opacity over the wash, per mode (asymmetric because white
+/// bleaches color and dark preserves it). 0.0 = panels vanish, the background
+/// IS the raw ramp (preview == BG, WYSIWYG); 1.0 = solid panels, wash hidden.
+static FROST_DARK: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.85));
+static FROST_LIGHT: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.59));
+
+pub fn frost(dark: bool) -> f32 {
+    if dark { *FROST_DARK.read().unwrap() } else { *FROST_LIGHT.read().unwrap() }
+}
+pub fn set_frost(dark: bool, v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    if dark {
+        *FROST_DARK.write().unwrap() = v;
+    } else {
+        *FROST_LIGHT.write().unwrap() = v;
+    }
+}
 
 pub fn gradient_cfg() -> GradientCfg {
     *GRAD_CFG.read().unwrap()

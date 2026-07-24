@@ -119,6 +119,12 @@ pub struct Prefs {
     pub gradient_preset: i16,
     /// Custom-mode pegs as comma-joined hex ("" = defaults).
     pub gradient_custom: String,
+    /// Frost = panel opacity over the wash, per mode (0..1).
+    pub frost_dark: f32,
+    pub frost_light: f32,
+    /// Picking a gradient preset also rethemes the app (accent from its most
+    /// saturated stop). Off = the old independent-blend behavior.
+    pub gradient_preset_sync: bool,
 }
 
 pub fn prefs_path() -> Option<PathBuf> {
@@ -144,6 +150,9 @@ pub fn load_prefs() -> Prefs {
         gradient_harmony: 0,
         gradient_preset: -1,
         gradient_custom: String::new(),
+        frost_dark: 0.85,
+        frost_light: 0.59,
+        gradient_preset_sync: true,
     };
     if let Some(content) = prefs_path().and_then(|p| std::fs::read_to_string(p).ok()) {
         for line in content.lines() {
@@ -175,6 +184,11 @@ pub fn load_prefs() -> Prefs {
                     "gradient_harmony" => prefs.gradient_harmony = val.trim().parse().unwrap_or(0),
                     "gradient_preset" => prefs.gradient_preset = val.trim().parse().unwrap_or(-1),
                     "gradient_custom" => prefs.gradient_custom = val.trim().to_string(),
+                    "frost_dark" => prefs.frost_dark = val.trim().parse().unwrap_or(0.85),
+                    "frost_light" => prefs.frost_light = val.trim().parse().unwrap_or(0.59),
+                    "gradient_preset_sync" => {
+                        prefs.gradient_preset_sync = val.trim() != "false"
+                    }
                     _ => {}
                 }
             }
@@ -189,7 +203,7 @@ fn save_prefs(prefs: &Prefs) {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut content = format!(
-            "hide_about={}\ndark_mode={}\ntheme_name={}\ntheme_accent={}\ngradient={}\ngradient_angle={}\ngradient_intensity={}\ngradient_pegs={}\ngradient_harmony={}\ngradient_preset={}\ngradient_custom={}",
+            "hide_about={}\ndark_mode={}\ntheme_name={}\ntheme_accent={}\ngradient={}\ngradient_angle={}\ngradient_intensity={}\ngradient_pegs={}\ngradient_harmony={}\ngradient_preset={}\ngradient_custom={}\nfrost_dark={}\nfrost_light={}\ngradient_preset_sync={}",
             prefs.hide_about,
             prefs.dark_mode,
             prefs.theme_name,
@@ -201,6 +215,9 @@ fn save_prefs(prefs: &Prefs) {
             prefs.gradient_harmony,
             prefs.gradient_preset,
             prefs.gradient_custom,
+            prefs.frost_dark,
+            prefs.frost_light,
+            prefs.gradient_preset_sync,
         );
         if let (Some(x), Some(y), Some(w), Some(h)) =
             (prefs.window_x, prefs.window_y, prefs.window_w, prefs.window_h)
@@ -253,6 +270,7 @@ pub struct SpaceViewApp {
     theme_accent: Option<String>,
     gradient: bool,
     show_gradient_editor: bool,
+    gradient_preset_sync: bool,
 
     // About dialog
     hide_about_on_start: bool,
@@ -397,6 +415,8 @@ impl SpaceViewApp {
             }
         }
         theme::set_gradient_cfg(grad_cfg);
+        theme::set_frost(true, prefs.frost_dark);
+        theme::set_frost(false, prefs.frost_light);
         theme::set_theme(&cc.egui_ctx, initial_tokens, prefs.gradient);
 
         // Spawn background version check
@@ -454,6 +474,7 @@ impl SpaceViewApp {
             theme_accent: prefs.theme_accent.clone(),
             gradient: prefs.gradient,
             show_gradient_editor: false,
+            gradient_preset_sync: prefs.gradient_preset_sync,
             hide_about_on_start: prefs.hide_about,
             show_about: !prefs.hide_about,
             icon_texture: None,
@@ -692,6 +713,9 @@ impl SpaceViewApp {
                 .map(|rgb| color::rgb_to_hex(*rgb))
                 .collect::<Vec<_>>()
                 .join(","),
+            frost_dark: theme::frost(true),
+            frost_light: theme::frost(false),
+            gradient_preset_sync: self.gradient_preset_sync,
         }
     }
 
@@ -1247,9 +1271,24 @@ impl eframe::App for SpaceViewApp {
                             cfg.harmony = rng.range(0, 6) as u8;
                             cfg.pegs = (2 + rng.range(0, 2)) as u8;
                         } else if rng.range(0, 1) == 0 {
-                            // Straight off the preset shelf.
+                            // Straight off the preset shelf — and the preset
+                            // owns the primary color (coherent, not mud).
                             cfg.preset =
                                 rng.range(0, theme::GRADIENT_PRESETS.len() as i32 - 1) as i16;
+                            if self.gradient_preset_sync {
+                            if let Some((pname, stops)) =
+                                theme::GRADIENT_PRESETS.get(cfg.preset as usize)
+                            {
+                                let rgbs: Vec<color::Rgb> =
+                                    stops.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+                                if let Some(acc) = theme::most_saturated(&rgbs) {
+                                    self.theme_name = (*pname).to_string();
+                                    self.theme_accent = Some(color::rgb_to_hex(acc));
+                                    let tk2 = theme::from_accent(acc, self.dark_mode);
+                                    theme::set_theme(ctx, tk2, self.gradient);
+                                }
+                            }
+                            }
                         } else {
                             // Magic flavor palette into custom pegs.
                             let kind = color::PaletteKind::ALL[rng.range(0, 5) as usize];
@@ -1428,6 +1467,21 @@ impl eframe::App for SpaceViewApp {
                                             .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                                     )
                                     .changed();
+                                // FROST: panel opacity over the wash. 0% =
+                                // panels vanish, background IS the preview
+                                // ramp (WYSIWYG); high = solid chrome.
+                                ui.label("Frost");
+                                let mut frost = theme::frost(self.dark_mode);
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut frost, 0.0..=1.0)
+                                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                                    )
+                                    .changed()
+                                {
+                                    theme::set_frost(self.dark_mode, frost);
+                                    dirty = true;
+                                }
                                 ui.separator();
 
                                 // Source mode chips: harmony / preset / custom.
@@ -1479,6 +1533,7 @@ impl eframe::App for SpaceViewApp {
                                             }
                                         });
                                 } else if cfg.preset >= 0 {
+                                    let preset_before = cfg.preset;
                                     let n_presets = theme::GRADIENT_PRESETS.len() as i16;
                                     ui.horizontal(|ui| {
                                         // Prev/next flank the dropdown so you can
@@ -1515,6 +1570,43 @@ impl eframe::App for SpaceViewApp {
                                             dirty = true;
                                         }
                                     });
+                                    ui.checkbox(
+                                        &mut self.gradient_preset_sync,
+                                        "Preset sets theme colors",
+                                    )
+                                    .on_hover_text(
+                                        "On: picking a preset rethemes the whole app (coherent). Off: preset only drives the wash over your accent's ground (the blend look).",
+                                    );
+                                    // A preset SETS the primary color too (Trent:
+                                    // "theme IS the gradient" — otherwise Toxic
+                                    // Slime green fights a purple accent ground
+                                    // and the blend is mud). Toggleable for A/B.
+                                    if self.gradient_preset_sync
+                                        && (dirty && cfg.preset != preset_before
+                                            || (dirty
+                                                && self.theme_name.as_str()
+                                                    != theme::GRADIENT_PRESETS
+                                                        .get(cfg.preset as usize)
+                                                        .map(|(n, _)| *n)
+                                                        .unwrap_or("")))
+                                    {
+                                        if let Some((pname, stops)) =
+                                            theme::GRADIENT_PRESETS.get(cfg.preset as usize)
+                                        {
+                                            let rgbs: Vec<color::Rgb> = stops
+                                                .iter()
+                                                .filter_map(|h| color::hex_to_rgb(h))
+                                                .collect();
+                                            if let Some(acc) = theme::most_saturated(&rgbs) {
+                                                self.theme_name = (*pname).to_string();
+                                                self.theme_accent =
+                                                    Some(color::rgb_to_hex(acc));
+                                                let tk2 =
+                                                    theme::from_accent(acc, self.dark_mode);
+                                                theme::set_theme(ui.ctx(), tk2, self.gradient);
+                                            }
+                                        }
+                                    }
                                     // Height parity with the two-row modes so the
                                     // window doesn't jump when switching sources.
                                     ui.add_space(26.0);
