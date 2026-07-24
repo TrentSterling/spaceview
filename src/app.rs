@@ -1313,6 +1313,7 @@ impl eframe::App for SpaceViewApp {
                         let mut open = true;
                         egui::Window::new("Theme")
                             .open(&mut open)
+                            .collapsible(false)
                             .resizable(false)
                             .default_width(260.0)
                             .show(ui.ctx(), |ui| {
@@ -1643,29 +1644,30 @@ impl eframe::App for SpaceViewApp {
                                         // it rethemes the app; it always
                                         // participates in the ramp. Slots 1..N
                                         // are free pegs.
-                                        let mut a = theme::t().accent;
+                                        let acc = theme::t().accent;
+                                        let mut rgb = [acc.r(), acc.g(), acc.b()];
                                         if ui
-                                            .color_edit_button_srgba(&mut a)
+                                            .color_edit_button_srgb(&mut rgb)
                                             .on_hover_text(
                                                 "Slot 1 = your theme accent (linked)",
                                             )
                                             .changed()
                                         {
-                                            let rgb = [a.r(), a.g(), a.b()];
                                             self.theme_name = "Custom".to_string();
                                             self.theme_accent = Some(color::rgb_to_hex(rgb));
                                             let tk2 = theme::from_accent(rgb, self.dark_mode);
                                             theme::set_theme(ui.ctx(), tk2, self.gradient);
                                             dirty = true;
                                         }
+                                        // srgb (no alpha) pickers: same picker,
+                                        // smaller and simpler — and physically
+                                        // incapable of showing the dead
+                                        // Blending/Additive row.
                                         for i in 1..(cfg.pegs.clamp(1, 4) as usize) {
-                                            let mut c = egui::Color32::from_rgb(
-                                                cfg.custom[i][0],
-                                                cfg.custom[i][1],
-                                                cfg.custom[i][2],
-                                            );
-                                            if ui.color_edit_button_srgba(&mut c).changed() {
-                                                cfg.custom[i] = [c.r(), c.g(), c.b()];
+                                            if ui
+                                                .color_edit_button_srgb(&mut cfg.custom[i])
+                                                .changed()
+                                            {
                                                 dirty = true;
                                             }
                                         }
