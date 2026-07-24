@@ -33,6 +33,11 @@ pub struct Tokens {
     pub text: Color32,
     pub muted: Color32,
     pub accent: Color32,
+    /// The accent walked toward legibility against the panel. `accent` is the
+    /// user's pick VERBATIM (black is allowed to be black); this variant is
+    /// used only where contrast is load-bearing: hyperlinks, hover rings,
+    /// focus accents. Fills keep the verbatim accent + on_accent text.
+    pub accent_readable: Color32,
     pub accent_dim: Color32,
     pub on_accent: Color32,
     pub edge: Color32,
@@ -61,6 +66,7 @@ fn dark_ground() -> Tokens {
         text: c32([224, 236, 244]),
         muted: c32([128, 150, 168]),
         accent: c32(accent),
+        accent_readable: c32(accent),
         accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
         on_accent: c32(color::contrast_color(accent)),
         edge: c32([33, 46, 60]),
@@ -82,6 +88,7 @@ fn light_ground() -> Tokens {
         text: c32([20, 28, 36]),
         muted: c32([96, 113, 128]),
         accent: c32(accent),
+        accent_readable: c32(accent),
         accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
         on_accent: c32(color::contrast_color(accent)),
         edge: c32([212, 219, 227]),
@@ -183,8 +190,8 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     let sel_fill = color::mix_colors(rgb_of(tk.accent), rgb_of(tk.bg), 0.30);
     v.selection.bg_fill = c32(sel_fill);
     v.selection.stroke = Stroke::new(1.0, c32(color::contrast_color(sel_fill)));
-    v.hyperlink_color = tk.accent;
-    v.warn_fg_color = tk.accent;
+    v.hyperlink_color = tk.accent_readable;
+    v.warn_fg_color = tk.accent_readable;
     v.error_fg_color = Color32::from_rgb(220, 80, 60);
 
     let r = corner_radius();
@@ -200,14 +207,20 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     let w = &mut v.widgets.inactive;
     w.bg_fill = tk.hover.gamma_multiply(0.6);
     w.weak_bg_fill = tk.hover.gamma_multiply(0.6);
-    w.bg_stroke = Stroke::new(1.0, tk.edge);
+    // Resting buttons need a VISIBLE outline, not just a hover reveal (Trent:
+    // "when I dont hover the button I dont really see the button") — edge
+    // pulled toward text so it reads on any tinted ground.
+    w.bg_stroke = Stroke::new(
+        1.0,
+        c32(color::mix_colors(rgb_of(tk.edge), rgb_of(tk.text), 0.30)),
+    );
     w.fg_stroke = txt;
     w.corner_radius = r;
 
     let w = &mut v.widgets.hovered;
     w.bg_fill = tk.hover;
     w.weak_bg_fill = tk.hover;
-    w.bg_stroke = Stroke::new(1.2, tk.accent);
+    w.bg_stroke = Stroke::new(1.2, tk.accent_readable);
     w.fg_stroke = Stroke::new(1.5, tk.text);
     w.corner_radius = r;
     w.expansion = 1.0;
@@ -239,37 +252,41 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
 /// dark/light ground and only swap the accent-derived fields, walking
 /// lightness (bounded) until the accent reads against the panel.
 pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
-    // DISCORD GROUND PARITY (Trent: "Cotton Candy needs work" — a pink theme
-    // should feel pink EVERYWHERE, not pink-widgets-on-navy). The ground
-    // itself takes the accent's hue at low saturation, so bg/panel/edge/text
-    // all lean into the theme instead of staying the fixed cyan-navy base.
-    let hue = color::rgb_to_hsl(accent).h;
+    // DISCORD GROUND PARITY: the ground takes the accent's hue at low
+    // saturation. Ground saturation SCALES with the pick's own saturation, so
+    // "going nuts" stays coherent: a gray/black accent yields a NEUTRAL
+    // ground instead of being forced colorful.
+    let a = color::rgb_to_hsl(accent);
+    let hue = a.h;
+    let satf = (a.s / 50.0).clamp(0.0, 1.0);
     let (bg, panel, edge, text, muted) = if dark {
         (
-            color::hsl_to_rgb(hue, 24.0, 7.0),
-            color::hsl_to_rgb(hue, 22.0, 11.0),
-            color::hsl_to_rgb(hue, 20.0, 19.0),
-            color::hsl_to_rgb(hue, 18.0, 92.0),
-            color::hsl_to_rgb(hue, 12.0, 62.0),
+            color::hsl_to_rgb(hue, 24.0 * satf, 7.0),
+            color::hsl_to_rgb(hue, 22.0 * satf, 11.0),
+            color::hsl_to_rgb(hue, 20.0 * satf, 19.0),
+            color::hsl_to_rgb(hue, 18.0 * satf, 92.0),
+            color::hsl_to_rgb(hue, 12.0 * satf, 62.0),
         )
     } else {
         (
-            color::hsl_to_rgb(hue, 35.0, 94.0),
-            color::hsl_to_rgb(hue, 30.0, 98.0),
-            color::hsl_to_rgb(hue, 20.0, 84.0),
-            color::hsl_to_rgb(hue, 30.0, 12.0),
-            color::hsl_to_rgb(hue, 12.0, 42.0),
+            color::hsl_to_rgb(hue, 35.0 * satf, 94.0),
+            color::hsl_to_rgb(hue, 30.0 * satf, 98.0),
+            color::hsl_to_rgb(hue, 20.0 * satf, 84.0),
+            color::hsl_to_rgb(hue, 30.0 * satf, 12.0),
+            color::hsl_to_rgb(hue, 12.0 * satf, 42.0),
         )
     };
 
-    // Contrast-walk the accent against the DERIVED panel (not the old fixed
-    // ground) so it stays readable on its own tinted chrome.
-    let mut chosen = accent;
+    // The user's accent is kept VERBATIM (black is allowed to be black — text
+    // ON accent fills derives from contrast_color of what's actually drawn).
+    // A separate READABLE variant is walked toward legibility against the
+    // panel for the few contrast-load-bearing usages (links, hover rings).
+    let mut readable = accent;
     let mut guard = 0;
-    while color::contrast_ratio(chosen, panel) < 2.2 && guard < 14 {
-        let h = color::rgb_to_hsl(chosen);
+    while color::contrast_ratio(readable, panel) < 2.2 && guard < 14 {
+        let h = color::rgb_to_hsl(readable);
         let l = if dark { (h.l + 6.0).min(92.0) } else { (h.l - 6.0).max(8.0) };
-        chosen = color::hsl_to_rgb(h.h, h.s.max(45.0), l);
+        readable = color::hsl_to_rgb(h.h, h.s, l);
         guard += 1;
     }
 
@@ -279,11 +296,12 @@ pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
         panel: c32(panel),
         text: c32(text),
         muted: c32(muted),
-        accent: c32(chosen),
-        accent_dim: c32(color::mix_colors(chosen, bg, 0.45)),
-        on_accent: c32(color::contrast_color(chosen)),
+        accent: c32(accent),
+        accent_readable: c32(readable),
+        accent_dim: c32(color::mix_colors(accent, bg, 0.45)),
+        on_accent: c32(color::contrast_color(accent)),
         edge: c32(edge),
-        hover: c32(color::mix_colors(panel, chosen, 0.14)),
+        hover: c32(color::mix_colors(panel, readable, 0.14)),
     }
 }
 
@@ -427,6 +445,14 @@ pub const GRADIENT_PRESETS: &[(&str, &[&str])] = &[
     ("Miami Nights", &["#FF0080", "#7928CA", "#4A00E0"]),
     ("Ember Fade", &["#F83600", "#F9D423"]),
     ("Concrete", &["#3A3D42", "#95989E"]),
+    ("Princess", &["#FF9A9E", "#FAD0C4", "#A18CD1"]),
+    ("Ocean Floor", &["#0F2027", "#2C5364", "#00B4DB"]),
+    ("Firewatch", &["#CB2D3E", "#EF473A", "#2C3E50"]),
+    ("Mint Chip", &["#00B09B", "#96C93D"]),
+    ("Bubblegum", &["#FC5C7D", "#6A82FB"]),
+    ("Night Drive", &["#0F0C29", "#302B63", "#24243E"]),
+    ("Sunburn", &["#FF512F", "#F09819"]),
+    ("Glacier", &["#83A4D4", "#B6FBFF"]),
 ];
 
 static GRAD_CFG: LazyLock<RwLock<GradientCfg>> = LazyLock::new(|| RwLock::new(GradientCfg::default()));
@@ -470,8 +496,14 @@ pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
         .take((cfg.pegs.clamp(2, 4)) as usize)
         .map(|h| {
             // Mode-adapt lightness: deep + rich on dark, pastel on light.
-            let l = if tk.dark { h.l.clamp(20.0, 42.0) } else { h.l.clamp(68.0, 88.0) };
-            let s = if tk.dark { h.s.clamp(35.0, 90.0) } else { h.s.clamp(30.0, 75.0) };
+            // Saturation is only capped, never forced UP — a gray/black
+            // accent legitimately yields a monochrome ramp (go nuts).
+            // Light pegs run RICHER than "airy" (55-78, not 68-88): on a
+            // near-white ground the wash has to carry real color or white
+            // themes read as gradient-off (Trent: "do all white themes not
+            // actually come through?").
+            let l = if tk.dark { h.l.clamp(20.0, 42.0) } else { h.l.clamp(55.0, 78.0) };
+            let s = if tk.dark { h.s.min(90.0) } else { h.s.min(75.0) };
             color::hsl_to_rgb(h.h, s, l)
         })
         .collect()

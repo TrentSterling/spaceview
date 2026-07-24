@@ -1104,6 +1104,13 @@ impl eframe::App for SpaceViewApp {
                 ctx, "app_icon", include_bytes!("../assets/icon.png"),
             ));
         }
+        // Preload the About face too: lazy-loading it on first About open made
+        // the window visibly resize over its first frames (Trent-flagged funk).
+        if self.face_texture.is_none() {
+            self.face_texture = Some(load_image_from_png(
+                ctx, "tront_face", include_bytes!("../assets/tront.png"),
+            ));
+        }
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Icon + wordmark double as a window drag handle (custom chrome:
@@ -1188,83 +1195,175 @@ impl eframe::App for SpaceViewApp {
                                 ui.selectable_value(&mut self.theme, t, t.label());
                             }
                         });
-                    let mode_label = if self.dark_mode { "Light" } else { "Dark" };
-                    if ui.button(mode_label).clicked() {
-                        self.dark_mode = !self.dark_mode;
-                        let tk = theme::resolve(&self.theme_name, self.theme_accent.as_ref(), self.dark_mode);
-                        theme::set_theme(ctx, tk, self.gradient);
-                        save_prefs(&self.current_prefs());
+                    // THE color block is the one theme button (Trent: "the
+                    // color block clicks and turns into a mega colormagic
+                    // picker"): click the accent swatch -> the Theme window
+                    // with dark/light, colours, and the whole gradient rig.
+                    let (srect, sresp) =
+                        ui.allocate_exact_size(egui::vec2(26.0, 18.0), egui::Sense::click());
+                    let tk_now = theme::t();
+                    ui.painter().rect_filled(srect, 4.0, tk_now.accent);
+                    let ring = if sresp.hovered() || self.show_gradient_editor {
+                        egui::Stroke::new(1.5, tk_now.text)
+                    } else {
+                        egui::Stroke::new(1.0, tk_now.edge)
+                    };
+                    ui.painter().rect_stroke(srect, 4.0, ring, egui::StrokeKind::Middle);
+                    if sresp
+                        .on_hover_text("Theme: colors, dark/light, gradient")
+                        .clicked()
+                    {
+                        self.show_gradient_editor = !self.show_gradient_editor;
                     }
-
-                    // ---- Chrome accent theme (colormagic house style) ----
-                    ui.separator();
-                    let mut accent_color = theme::t().accent;
-                    let changed = ui
-                        .scope(|ui| {
-                            ui.spacing_mut().interact_size = egui::vec2(28.0, 20.0);
-                            ui.color_edit_button_srgba(&mut accent_color).changed()
-                        })
-                        .inner;
-                    if changed {
-                        let rgb = [accent_color.r(), accent_color.g(), accent_color.b()];
-                        self.theme_name = "Custom".to_string();
-                        self.theme_accent = Some(color::rgb_to_hex(rgb));
-                        let tk = theme::from_accent(rgb, self.dark_mode);
-                        theme::set_theme(ctx, tk, self.gradient);
-                        save_prefs(&self.current_prefs());
-                    }
-
-                    egui::ComboBox::from_id_salt("chrome_theme_selector")
-                        .selected_text(self.theme_name.as_str())
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(self.theme_name == "Cyan", "Cyan").clicked() {
-                                self.theme_name = "Cyan".to_string();
-                                self.theme_accent = None;
-                                let tk = theme::resolve("Cyan", None, self.dark_mode);
-                                theme::set_theme(ctx, tk, self.gradient);
-                                save_prefs(&self.current_prefs());
-                            }
-                            for p in color::PREMADE_PALETTES {
-                                if ui.selectable_label(self.theme_name == p.name, p.name).clicked() {
-                                    if let Some((tk, hex)) = theme::premade_tokens(p.name, self.dark_mode) {
-                                        self.theme_name = p.name.to_string();
-                                        self.theme_accent = Some(hex);
-                                        theme::set_theme(ctx, tk, self.gradient);
-                                        save_prefs(&self.current_prefs());
-                                    }
-                                }
-                            }
-                        });
-
-                    if ui.button("🎲").on_hover_text("Randomize theme").clicked() {
+                    // Random EVERYTHING (Trent: "easier random button for all
+                    // the things") — one click rolls theme + gradient together.
+                    if ui
+                        .button("Random")
+                        .on_hover_text("Randomize theme + gradient in one roll")
+                        .clicked()
+                    {
                         let (tk, name, hex) = theme::randomize(self.dark_mode);
                         self.theme_name = name;
                         self.theme_accent = Some(hex);
                         theme::set_theme(ctx, tk, self.gradient);
+                        let mut cfg = theme::gradient_cfg();
+                        let mut rng = color::Rng::from_clock();
+                        if rng.range(0, 2) == 0 {
+                            // Harmony roll off the fresh accent.
+                            cfg.preset = -1;
+                            cfg.harmony = rng.range(0, 6) as u8;
+                            cfg.pegs = (2 + rng.range(0, 2)) as u8;
+                        } else if rng.range(0, 1) == 0 {
+                            // Straight off the preset shelf.
+                            cfg.preset =
+                                rng.range(0, theme::GRADIENT_PRESETS.len() as i32 - 1) as i16;
+                        } else {
+                            // Magic flavor palette into custom pegs.
+                            let kind = color::PaletteKind::ALL[rng.range(0, 5) as usize];
+                            let cols = color::generate_random_palette(kind, 4, &mut rng);
+                            for (i, h) in cols.iter().take(4).enumerate() {
+                                cfg.custom[i] = color::hsl_to_rgb(h.h, h.s, h.l);
+                            }
+                            cfg.preset = -2;
+                            cfg.pegs = if rng.range(0, 1) == 0 { 3 } else { 4 };
+                        }
+                        cfg.angle_deg = rng.range(0, 359) as f32;
+                        theme::set_gradient_cfg(cfg);
                         save_prefs(&self.current_prefs());
                     }
-
-                    if ui.checkbox(&mut self.gradient, "Gradient").changed() {
-                        save_prefs(&self.current_prefs());
-                    }
-                    // Gradient editor toggle (the editor itself is a proper
-                    // movable Window below — nested menu popovers were fucky).
-                    if self.gradient
-                        && ui
-                            .selectable_label(self.show_gradient_editor, "Editor")
-                            .on_hover_text("Gradient editor: direction, intensity, pegs, magic")
-                            .clicked()
-                    {
-                        self.show_gradient_editor = !self.show_gradient_editor;
-                    }
-                    if self.gradient && self.show_gradient_editor {
+                    if self.show_gradient_editor {
                         let mut open = true;
-                        egui::Window::new("Gradient")
+                        egui::Window::new("Theme")
                             .open(&mut open)
                             .resizable(false)
                             .default_width(260.0)
                             .show(ui.ctx(), |ui| {
+                                // ---- THE picker, big and up front (one swatch
+                                // exists: the toolbar block; in here the full
+                                // picker IS the interface, no second swatch,
+                                // no popup nesting — which also removes the
+                                // stock Blending row that could never stick).
+                                let mut accent_color = theme::t().accent;
+                                if egui::color_picker::color_picker_color32(
+                                    ui,
+                                    &mut accent_color,
+                                    egui::color_picker::Alpha::Opaque,
+                                ) {
+                                    let rgb =
+                                        [accent_color.r(), accent_color.g(), accent_color.b()];
+                                    self.theme_name = "Custom".to_string();
+                                    self.theme_accent = Some(color::rgb_to_hex(rgb));
+                                    let tk = theme::from_accent(rgb, self.dark_mode);
+                                    theme::set_theme(ui.ctx(), tk, self.gradient);
+                                    save_prefs(&self.current_prefs());
+                                }
+                                ui.separator();
+
+                                // ---- Mode + premades + random, one tight row ----
+                                let mut mode_changed = false;
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(self.dark_mode, "Dark").clicked()
+                                        && !self.dark_mode
+                                    {
+                                        self.dark_mode = true;
+                                        mode_changed = true;
+                                    }
+                                    if ui.selectable_label(!self.dark_mode, "Light").clicked()
+                                        && self.dark_mode
+                                    {
+                                        self.dark_mode = false;
+                                        mode_changed = true;
+                                    }
+                                    ui.separator();
+                                    egui::ComboBox::from_id_salt("chrome_theme_selector")
+                                        .selected_text(self.theme_name.as_str())
+                                        .width(140.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(self.theme_name == "Cyan", "Cyan")
+                                                .clicked()
+                                            {
+                                                self.theme_name = "Cyan".to_string();
+                                                self.theme_accent = None;
+                                                let tk =
+                                                    theme::resolve("Cyan", None, self.dark_mode);
+                                                theme::set_theme(ui.ctx(), tk, self.gradient);
+                                                save_prefs(&self.current_prefs());
+                                            }
+                                            for p in color::PREMADE_PALETTES {
+                                                if ui
+                                                    .selectable_label(
+                                                        self.theme_name == p.name,
+                                                        p.name,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    if let Some((tk, hex)) = theme::premade_tokens(
+                                                        p.name,
+                                                        self.dark_mode,
+                                                    ) {
+                                                        self.theme_name = p.name.to_string();
+                                                        self.theme_accent = Some(hex);
+                                                        theme::set_theme(
+                                                            ui.ctx(),
+                                                            tk,
+                                                            self.gradient,
+                                                        );
+                                                        save_prefs(&self.current_prefs());
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    if ui.button("Random").on_hover_text("Roll a theme").clicked()
+                                    {
+                                        let (tk, name, hex) = theme::randomize(self.dark_mode);
+                                        self.theme_name = name;
+                                        self.theme_accent = Some(hex);
+                                        theme::set_theme(ui.ctx(), tk, self.gradient);
+                                        save_prefs(&self.current_prefs());
+                                    }
+                                });
+                                // The handler the restructure dropped (Trent:
+                                // "dark and light dont do anything") — chips
+                                // flip the flag, THIS applies it.
+                                if mode_changed {
+                                    let tk = theme::resolve(
+                                        &self.theme_name,
+                                        self.theme_accent.as_ref(),
+                                        self.dark_mode,
+                                    );
+                                    theme::set_theme(ui.ctx(), tk, self.gradient);
+                                    save_prefs(&self.current_prefs());
+                                }
+                                ui.separator();
+
+                                // ---- Gradient ----
+                                if ui.checkbox(&mut self.gradient, "Gradient").changed() {
+                                    save_prefs(&self.current_prefs());
+                                }
+                                if !self.gradient {
+                                    return;
+                                }
                                 let tk = theme::t();
                                 let mut cfg = theme::gradient_cfg();
                                 let mut dirty = false;
@@ -1361,26 +1460,45 @@ impl eframe::App for SpaceViewApp {
                                             }
                                         });
                                 } else if cfg.preset >= 0 {
-                                    let preset_label = theme::GRADIENT_PRESETS
-                                        .get(cfg.preset as usize)
-                                        .map(|(n, _)| *n)
-                                        .unwrap_or("Preset");
-                                    egui::ComboBox::from_id_salt("gradient_preset")
-                                        .selected_text(preset_label)
-                                        .width(200.0)
-                                        .show_ui(ui, |ui| {
-                                            for (i, (name, _)) in
-                                                theme::GRADIENT_PRESETS.iter().enumerate()
-                                            {
-                                                if ui
-                                                    .selectable_label(cfg.preset == i as i16, *name)
-                                                    .clicked()
+                                    let n_presets = theme::GRADIENT_PRESETS.len() as i16;
+                                    ui.horizontal(|ui| {
+                                        // Prev/next flank the dropdown so you can
+                                        // ride through the shelf without opening it.
+                                        if ui.button("<").clicked() {
+                                            cfg.preset = (cfg.preset - 1).rem_euclid(n_presets);
+                                            dirty = true;
+                                        }
+                                        let preset_label = theme::GRADIENT_PRESETS
+                                            .get(cfg.preset as usize)
+                                            .map(|(n, _)| *n)
+                                            .unwrap_or("Preset");
+                                        egui::ComboBox::from_id_salt("gradient_preset")
+                                            .selected_text(preset_label)
+                                            .width(160.0)
+                                            .show_ui(ui, |ui| {
+                                                for (i, (name, _)) in
+                                                    theme::GRADIENT_PRESETS.iter().enumerate()
                                                 {
-                                                    cfg.preset = i as i16;
-                                                    dirty = true;
+                                                    if ui
+                                                        .selectable_label(
+                                                            cfg.preset == i as i16,
+                                                            *name,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        cfg.preset = i as i16;
+                                                        dirty = true;
+                                                    }
                                                 }
-                                            }
-                                        });
+                                            });
+                                        if ui.button(">").clicked() {
+                                            cfg.preset = (cfg.preset + 1).rem_euclid(n_presets);
+                                            dirty = true;
+                                        }
+                                    });
+                                    // Height parity with the two-row modes so the
+                                    // window doesn't jump when switching sources.
+                                    ui.add_space(26.0);
                                 } else {
                                     // Custom: your colors, your rules.
                                     ui.horizontal(|ui| {
