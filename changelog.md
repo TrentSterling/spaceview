@@ -1,3 +1,16 @@
+﻿## v0.14.0 - house theme + Discord-style gradients
+
+- Full TrontStack house theme for the chrome: colormagic engine (accent picker,
+  32 premades, randomizer, WCAG smart contrast), runtime-swappable, persisted.
+  Treemap palettes untouched - they were already the star.
+- Discord-grade background gradient derived live from the theme, with a
+  Gradient toggle. Ground parity: every theme tints the WHOLE ground toward
+  its hue (Cotton Candy feels pink everywhere, not pink-widgets-on-navy).
+- App icon rides the top bar (the OS title bar that used to show it is gone).
+- Movable About / Confirm Delete / Select Drive dialogs (anchored egui windows
+  are immovable by definition - swapped to pivot + default-center).
+- Contrast fixes: no more override_text_color steamrolling selection contrast;
+  selection fill softened and its text derived from the drawn fill.
 # Changelog
 
 ## v0.13.0 - custom window chrome

@@ -2,8 +2,10 @@
 
 mod app;
 mod camera;
+mod color;
 mod scanner;
 mod stress;
+mod theme;
 mod treemap;
 mod window_chrome;
 mod world_layout;

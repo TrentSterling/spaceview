@@ -1,5 +1,7 @@
 use crate::camera::Camera;
+use crate::color;
 use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory_live};
+use crate::theme;
 use crate::treemap;
 use crate::window_chrome;
 use crate::world_layout::{LayoutNode, WorldLayout};
@@ -102,6 +104,12 @@ pub struct Prefs {
     pub window_y: Option<f32>,
     pub window_w: Option<f32>,
     pub window_h: Option<f32>,
+    /// Chrome accent theme (colormagic): "Cyan" is the hardcoded house default,
+    /// anything else re-derives from `theme_accent` via `theme::from_accent`.
+    pub theme_name: String,
+    pub theme_accent: Option<String>,
+    /// Discord-style background wash. Default ON.
+    pub gradient: bool,
 }
 
 pub fn prefs_path() -> Option<PathBuf> {
@@ -118,6 +126,9 @@ pub fn load_prefs() -> Prefs {
         window_y: None,
         window_w: None,
         window_h: None,
+        theme_name: "Cyan".to_string(),
+        theme_accent: None,
+        gradient: true,
     };
     if let Some(content) = prefs_path().and_then(|p| std::fs::read_to_string(p).ok()) {
         for line in content.lines() {
@@ -130,6 +141,17 @@ pub fn load_prefs() -> Prefs {
                     "window_y" => prefs.window_y = val.trim().parse().ok(),
                     "window_w" => prefs.window_w = val.trim().parse().ok(),
                     "window_h" => prefs.window_h = val.trim().parse().ok(),
+                    "theme_name" => {
+                        let v = val.trim();
+                        if !v.is_empty() {
+                            prefs.theme_name = v.to_string();
+                        }
+                    }
+                    "theme_accent" => {
+                        let v = val.trim();
+                        prefs.theme_accent = if v.is_empty() { None } else { Some(v.to_string()) };
+                    }
+                    "gradient" => prefs.gradient = val.trim() == "true",
                     _ => {}
                 }
             }
@@ -144,8 +166,12 @@ fn save_prefs(prefs: &Prefs) {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut content = format!(
-            "hide_about={}\ndark_mode={}",
-            prefs.hide_about, prefs.dark_mode,
+            "hide_about={}\ndark_mode={}\ntheme_name={}\ntheme_accent={}\ngradient={}",
+            prefs.hide_about,
+            prefs.dark_mode,
+            prefs.theme_name,
+            prefs.theme_accent.as_deref().unwrap_or(""),
+            prefs.gradient,
         );
         if let (Some(x), Some(y), Some(w), Some(h)) =
             (prefs.window_x, prefs.window_y, prefs.window_w, prefs.window_h)
@@ -188,9 +214,15 @@ pub struct SpaceViewApp {
     // Last frame time for dt calculation
     last_time: f64,
 
-    // Theme
+    // Treemap tile-color theme (Rainbow/Neon/Ocean) — untouched by the chrome theme below.
     theme: ColorTheme,
     dark_mode: bool,
+
+    // Chrome accent theme (colormagic). Tokens live in `theme::CURRENT`; these
+    // three just mirror what's persisted so the UI/prefs stay in sync.
+    theme_name: String,
+    theme_accent: Option<String>,
+    gradient: bool,
 
     // About dialog
     hide_about_on_start: bool,
@@ -315,8 +347,13 @@ fn is_newer_version(local: &str, remote: &str) -> bool {
 }
 
 impl SpaceViewApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let prefs = load_prefs();
+
+        // Install the chrome theme (colormagic) before the first frame, so
+        // there's no default-egui flash on startup.
+        let initial_tokens = theme::resolve(&prefs.theme_name, prefs.theme_accent.as_ref(), prefs.dark_mode);
+        theme::set_theme(&cc.egui_ctx, initial_tokens, prefs.gradient);
 
         // Spawn background version check
         let (update_tx, update_rx) = std::sync::mpsc::channel();
@@ -369,6 +406,9 @@ impl SpaceViewApp {
             last_time: 0.0,
             theme: ColorTheme::Rainbow,
             dark_mode: prefs.dark_mode,
+            theme_name: prefs.theme_name.clone(),
+            theme_accent: prefs.theme_accent.clone(),
+            gradient: prefs.gradient,
             hide_about_on_start: prefs.hide_about,
             show_about: !prefs.hide_about,
             icon_texture: None,
@@ -593,6 +633,9 @@ impl SpaceViewApp {
             window_y: self.last_window_outer_pos.map(|p| p.y),
             window_w: self.last_window_inner_size.map(|s| s.x),
             window_h: self.last_window_inner_size.map(|s| s.y),
+            theme_name: self.theme_name.clone(),
+            theme_accent: self.theme_accent.clone(),
+            gradient: self.gradient,
         }
     }
 
@@ -624,11 +667,16 @@ fn load_image_from_png(ctx: &egui::Context, name: &str, png_data: &[u8]) -> egui
 
 impl eframe::App for SpaceViewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply dark/light mode
-        if self.dark_mode {
-            ctx.set_visuals(egui::Visuals::dark());
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        // Chrome theme (colormagic tokens, house style) + Discord-style
+        // background wash. Tokens live in `theme::CURRENT`; dark/light and
+        // accent picks all funnel through `theme::set_theme` at the point
+        // they change, so this just re-applies visuals from whatever is
+        // current and (if enabled) paints the gradient into the background
+        // layer before any panel draws.
+        let tk = theme::t();
+        ctx.set_visuals(theme::build_visuals(tk, self.gradient));
+        if self.gradient {
+            theme::paint_gradient(ctx, &tk);
         }
 
         let now = ctx.input(|i| i.time);
@@ -784,7 +832,8 @@ impl eframe::App for SpaceViewApp {
             egui::Window::new("About SpaceView")
                 .collapsible(false)
                 .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
@@ -877,7 +926,8 @@ impl eframe::App for SpaceViewApp {
             egui::Window::new("Confirm Delete")
                 .collapsible(false)
                 .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
                     ui.label("Send to Recycle Bin?");
                     ui.add_space(4.0);
@@ -920,7 +970,8 @@ impl eframe::App for SpaceViewApp {
             egui::Window::new("Select Drive")
                 .collapsible(false)
                 .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
                     ui.add_space(4.0);
                     for drive in &self.cached_drives {
@@ -989,10 +1040,28 @@ impl eframe::App for SpaceViewApp {
         }
 
         // ---- Top panel ----
+        // The app icon rides the top bar now that the OS title bar (which used
+        // to show it) is gone — lazy-loaded here since About no longer has to
+        // be opened first.
+        if self.icon_texture.is_none() {
+            self.icon_texture = Some(load_image_from_png(
+                ctx, "app_icon", include_bytes!("../assets/icon.png"),
+            ));
+        }
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Wordmark doubles as a window drag handle (custom chrome: no OS
-                // title bar), so a packed toolbar always has a grab point.
+                // Icon + wordmark double as a window drag handle (custom chrome:
+                // no OS title bar), so a packed toolbar always has a grab point.
+                if let Some(ref tex) = self.icon_texture {
+                    let logo = ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(20.0, 20.0),
+                        ))
+                        .sense(egui::Sense::click_and_drag()),
+                    );
+                    window_chrome::drag_window(ctx, &logo);
+                }
                 let wm = ui.add(
                     egui::Label::new(egui::RichText::new("SpaceView").heading())
                         .sense(egui::Sense::click_and_drag()),
@@ -1066,8 +1135,64 @@ impl eframe::App for SpaceViewApp {
                     let mode_label = if self.dark_mode { "Light" } else { "Dark" };
                     if ui.button(mode_label).clicked() {
                         self.dark_mode = !self.dark_mode;
+                        let tk = theme::resolve(&self.theme_name, self.theme_accent.as_ref(), self.dark_mode);
+                        theme::set_theme(ctx, tk, self.gradient);
                         save_prefs(&self.current_prefs());
                     }
+
+                    // ---- Chrome accent theme (colormagic house style) ----
+                    ui.separator();
+                    let mut accent_color = theme::t().accent;
+                    let changed = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().interact_size = egui::vec2(28.0, 20.0);
+                            ui.color_edit_button_srgba(&mut accent_color).changed()
+                        })
+                        .inner;
+                    if changed {
+                        let rgb = [accent_color.r(), accent_color.g(), accent_color.b()];
+                        self.theme_name = "Custom".to_string();
+                        self.theme_accent = Some(color::rgb_to_hex(rgb));
+                        let tk = theme::from_accent(rgb, self.dark_mode);
+                        theme::set_theme(ctx, tk, self.gradient);
+                        save_prefs(&self.current_prefs());
+                    }
+
+                    egui::ComboBox::from_id_salt("chrome_theme_selector")
+                        .selected_text(self.theme_name.as_str())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(self.theme_name == "Cyan", "Cyan").clicked() {
+                                self.theme_name = "Cyan".to_string();
+                                self.theme_accent = None;
+                                let tk = theme::resolve("Cyan", None, self.dark_mode);
+                                theme::set_theme(ctx, tk, self.gradient);
+                                save_prefs(&self.current_prefs());
+                            }
+                            for p in color::PREMADE_PALETTES {
+                                if ui.selectable_label(self.theme_name == p.name, p.name).clicked() {
+                                    if let Some((tk, hex)) = theme::premade_tokens(p.name, self.dark_mode) {
+                                        self.theme_name = p.name.to_string();
+                                        self.theme_accent = Some(hex);
+                                        theme::set_theme(ctx, tk, self.gradient);
+                                        save_prefs(&self.current_prefs());
+                                    }
+                                }
+                            }
+                        });
+
+                    if ui.button("🎲").on_hover_text("Randomize theme").clicked() {
+                        let (tk, name, hex) = theme::randomize(self.dark_mode);
+                        self.theme_name = name;
+                        self.theme_accent = Some(hex);
+                        theme::set_theme(ctx, tk, self.gradient);
+                        save_prefs(&self.current_prefs());
+                    }
+
+                    if ui.checkbox(&mut self.gradient, "Gradient").changed() {
+                        save_prefs(&self.current_prefs());
+                    }
+
                     // Color mode toggle (cycles Depth -> Age -> Extension -> Depth)
                     if self.scan_root.is_some() {
                         let color_label = match self.color_mode {

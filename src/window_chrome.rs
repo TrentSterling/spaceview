@@ -109,7 +109,10 @@ pub fn caption_overlay(ctx: &egui::Context) {
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
             egui::Frame::NONE
-                .fill(ui.visuals().panel_fill)
+                // Solid token panel color, NOT visuals().panel_fill — the
+                // gradient makes panel_fill translucent, and this overlay's
+                // whole job is being opaque over a cramped toolbar.
+                .fill(crate::theme::t().panel)
                 .corner_radius(egui::CornerRadius { sw: 6, ..Default::default() })
                 .inner_margin(egui::Margin { left: 6, right: 4, top: 3, bottom: 3 })
                 .show(ui, |ui| {
