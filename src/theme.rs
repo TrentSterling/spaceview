@@ -507,11 +507,13 @@ pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
     // smart-slot rule: the primary color can never be missing from the ramp).
     // Slots 1..N are the user's exact colors, no adult supervision.
     if cfg.preset == -2 {
-        let n = cfg.pegs.clamp(2, 4) as usize;
-        let mut pegs: Vec<Rgb> = Vec::with_capacity(n);
+        let n = cfg.pegs.clamp(1, 4) as usize;
+        let mut pegs: Vec<Rgb> = Vec::with_capacity(n.max(2));
         pegs.push(rgb_of(tk.accent));
-        pegs.extend_from_slice(&cfg.custom[1..n]);
-        return pegs;
+        if n > 1 {
+            pegs.extend_from_slice(&cfg.custom[1..n]);
+        }
+        return mono_partner(pegs, tk.dark);
     }
 
     // Curated preset: designed stops used verbatim (dark), lifted toward
@@ -530,9 +532,9 @@ pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
     let rule = color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
     let base = color::rgb_to_hsl(rgb_of(tk.accent));
     let spread = color::generate_harmony(base, rule);
-    spread
+    let derived: Vec<Rgb> = spread
         .into_iter()
-        .take((cfg.pegs.clamp(2, 4)) as usize)
+        .take((cfg.pegs.clamp(1, 4)) as usize)
         .map(|h| {
             // Mode-adapt lightness: deep + rich on dark, pastel on light.
             // Saturation is only capped, never forced UP — a gray/black
@@ -545,7 +547,24 @@ pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
             let s = if tk.dark { h.s.min(90.0) } else { h.s.min(75.0) };
             color::hsl_to_rgb(h.h, s, l)
         })
-        .collect()
+        .collect();
+    mono_partner(derived, tk.dark)
+}
+
+/// ONE-COLOR THEME MODE: a single peg gets an auto-derived deep (dark mode)
+/// or airy (light mode) partner so the ramp is a monochrome sweep instead of
+/// a flat fill — smart slots means 1 peg is a real, good-looking choice.
+fn mono_partner(mut pegs: Vec<Rgb>, dark: bool) -> Vec<Rgb> {
+    if pegs.len() == 1 {
+        let h = color::rgb_to_hsl(pegs[0]);
+        let partner = if dark {
+            color::hsl_to_rgb(h.h, h.s, (h.l * 0.40).max(8.0))
+        } else {
+            color::hsl_to_rgb(h.h, (h.s * 0.8).max(15.0), (h.l * 1.35).min(90.0))
+        };
+        pegs.push(partner);
+    }
+    pegs
 }
 
 /// Sample the peg ramp at t in [0,1], with end-hold easing so the outer ~12%

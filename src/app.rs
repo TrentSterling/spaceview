@@ -404,7 +404,7 @@ impl SpaceViewApp {
         let mut grad_cfg = theme::GradientCfg {
             angle_deg: prefs.gradient_angle,
             intensity: prefs.gradient_intensity.clamp(0.0, 1.0),
-            pegs: prefs.gradient_pegs.clamp(2, 4),
+            pegs: prefs.gradient_pegs.clamp(1, 4),
             harmony: prefs.gradient_harmony,
             preset: prefs.gradient_preset,
             ..Default::default()
@@ -1519,7 +1519,7 @@ impl eframe::App for SpaceViewApp {
                                 if cfg.preset == -1 {
                                     ui.horizontal(|ui| {
                                         ui.label("Pegs");
-                                        for n in 2..=4u8 {
+                                        for n in 1..=4u8 {
                                             if ui
                                                 .selectable_label(cfg.pegs == n, format!("{n}"))
                                                 .clicked()
@@ -1628,7 +1628,7 @@ impl eframe::App for SpaceViewApp {
                                     // Custom: your colors, your rules.
                                     ui.horizontal(|ui| {
                                         ui.label("Pegs");
-                                        for n in 2..=4u8 {
+                                        for n in 1..=4u8 {
                                             if ui
                                                 .selectable_label(cfg.pegs == n, format!("{n}"))
                                                 .clicked()
@@ -1658,7 +1658,7 @@ impl eframe::App for SpaceViewApp {
                                             theme::set_theme(ui.ctx(), tk2, self.gradient);
                                             dirty = true;
                                         }
-                                        for i in 1..(cfg.pegs.clamp(2, 4) as usize) {
+                                        for i in 1..(cfg.pegs.clamp(1, 4) as usize) {
                                             let mut c = egui::Color32::from_rgb(
                                                 cfg.custom[i][0],
                                                 cfg.custom[i][1],
@@ -1694,8 +1694,21 @@ impl eframe::App for SpaceViewApp {
                                         cfg.angle_deg = rng.range(0, 359) as f32;
                                         dirty = true;
                                     }
-                                    if ui.button("Reset").clicked() {
+                                    if ui
+                                        .button("Reset")
+                                        .on_hover_text(
+                                            "The wayback machine: restores the known-good look (intensity 45%, frost 85%/59%, harmony pegs) - the settings every Random used to land on",
+                                        )
+                                        .clicked()
+                                    {
                                         cfg = theme::GradientCfg::default();
+                                        // Reset MUST restore frost too — this was
+                                        // the "I can't find the settings that
+                                        // looked good earlier" trap: Reset fixed
+                                        // the ramp but left frost at 0, so the
+                                        // sweet spot was unreachable.
+                                        theme::set_frost(true, 0.85);
+                                        theme::set_frost(false, 0.59);
                                         dirty = true;
                                     }
                                 });
