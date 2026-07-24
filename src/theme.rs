@@ -148,7 +148,12 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // bisect `Visuals::light()`'s ~30 fields for one that affects background-
     // layer alpha compositing specifically, or paint a Window instead of a
     // TopBottomPanel/CentralPanel background layer shape and compare.
-    let panel_alpha: u8 = if gradient { 216 } else { 255 };
+    // Frost is ASYMMETRIC by mode (root cause of "light themes don't tint at
+    // all", verified by pixel math on a live capture): dark panels over a
+    // colorful wash preserve hue, but WHITE at 216 alpha bleaches any color
+    // to ~15% — invisible. Light mode gets much thinner frost so the wash
+    // survives; dark text on a light panel stays readable regardless.
+    let panel_alpha: u8 = if gradient { if tk.dark { 216 } else { 150 } } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), panel_alpha);
 
     // Floating windows (About, dialogs, the gradient editor) carry paragraphs
