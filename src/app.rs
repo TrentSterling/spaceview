@@ -1956,6 +1956,14 @@ impl eframe::App for SpaceViewApp {
                     ui.strong("Keyboard Shortcuts");
                     ui.add_space(6.0);
 
+                    // Center the grid AS A BLOCK under the centered header —
+                    // a Grid inside vertical_centered still pins its columns
+                    // to the left margin (Trent: "oddly to the left").
+                    let grid_w = 280.0;
+                    let indent = ((ui.available_width() - grid_w) * 0.5).max(0.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        ui.vertical(|ui| {
                     egui::Grid::new("welcome_shortcuts")
                         .num_columns(2)
                         .spacing([20.0, 4.0])
@@ -1976,6 +1984,8 @@ impl eframe::App for SpaceViewApp {
                             ui.label("Zoom out");
                             ui.end_row();
                         });
+                        });
+                    });
                 });
                 if let Some(path) = scan_target {
                     self.start_scan(path);
