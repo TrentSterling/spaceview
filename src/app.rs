@@ -976,12 +976,19 @@ impl eframe::App for SpaceViewApp {
         }
 
         // ---- Delete confirmation dialog ----
+        // MODAL LAW (Trent): every modal closes via BOTH Esc and an X button.
         if self.pending_delete.is_some() {
             let path = self.pending_delete.clone().unwrap();
             let mut keep_open = true;
+            let mut clicked_close = false;
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                keep_open = false;
+                escape_consumed = true;
+            }
             egui::Window::new("Confirm Delete")
                 .collapsible(false)
                 .resizable(false)
+                .open(&mut keep_open)
                 .pivot(egui::Align2::CENTER_CENTER)
                 .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
@@ -1007,14 +1014,14 @@ impl eframe::App for SpaceViewApp {
                             if let Some(ref scan_path) = self.scan_path {
                                 self.start_scan(scan_path.clone());
                             }
-                            keep_open = false;
+                            clicked_close = true;
                         }
                         if ui.button("Cancel").clicked() {
-                            keep_open = false;
+                            clicked_close = true;
                         }
                     });
                 });
-            if !keep_open {
+            if !keep_open || clicked_close {
                 self.pending_delete = None;
             }
         }
@@ -1022,10 +1029,16 @@ impl eframe::App for SpaceViewApp {
         // ---- Drive picker window ----
         if self.show_drive_picker {
             let mut close_picker = false;
+            let mut picker_open = true;
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close_picker = true;
+                escape_consumed = true;
+            }
             let mut scan_target: Option<PathBuf> = None;
             egui::Window::new("Select Drive")
                 .collapsible(false)
                 .resizable(false)
+                .open(&mut picker_open)
                 .pivot(egui::Align2::CENTER_CENTER)
                 .default_pos(ctx.screen_rect().center())
                 .show(ctx, |ui| {
@@ -1090,7 +1103,7 @@ impl eframe::App for SpaceViewApp {
             if let Some(path) = scan_target {
                 self.start_scan(path);
             }
-            if close_picker {
+            if close_picker || !picker_open {
                 self.show_drive_picker = false;
             }
         }
@@ -1250,6 +1263,12 @@ impl eframe::App for SpaceViewApp {
                         cfg.angle_deg = rng.range(0, 359) as f32;
                         theme::set_gradient_cfg(cfg);
                         save_prefs(&self.current_prefs());
+                    }
+                    if self.show_gradient_editor
+                        && ui.ctx().input(|i| i.key_pressed(egui::Key::Escape))
+                    {
+                        // Modal law: Esc closes every window, not just X.
+                        self.show_gradient_editor = false;
                     }
                     if self.show_gradient_editor {
                         let mut open = true;
@@ -1956,36 +1975,38 @@ impl eframe::App for SpaceViewApp {
                     ui.strong("Keyboard Shortcuts");
                     ui.add_space(6.0);
 
-                    // Center the grid AS A BLOCK under the centered header —
-                    // a Grid inside vertical_centered still pins its columns
-                    // to the left margin (Trent: "oddly to the left").
-                    let grid_w = 280.0;
-                    let indent = ((ui.available_width() - grid_w) * 0.5).max(0.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(indent);
-                        ui.vertical(|ui| {
-                    egui::Grid::new("welcome_shortcuts")
-                        .num_columns(2)
-                        .spacing([20.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label("Scroll");
-                            ui.label("Zoom in/out");
-                            ui.end_row();
-                            ui.label("Double-click");
-                            ui.label("Zoom into folder");
-                            ui.end_row();
-                            ui.label("Right-click");
-                            ui.label("Zoom out");
-                            ui.end_row();
-                            ui.label("Drag");
-                            ui.label("Pan view");
-                            ui.end_row();
-                            ui.label("Backspace / Esc");
-                            ui.label("Zoom out");
-                            ui.end_row();
+                    // Definition-list treatment (the TrontSnap About pattern):
+                    // keys RIGHT-aligned in accent, actions left in muted, so
+                    // the gutter — the grid's visual axis — sits centered
+                    // under the header instead of the block merely being
+                    // centered on its total width.
+                    let tk = theme::t();
+                    let col_w = 150.0;
+                    let gap = 24.0;
+                    let indent = ((ui.available_width() - (col_w * 2.0 + gap)) * 0.5).max(0.0);
+                    let shortcut_rows: [(&str, &str); 5] = [
+                        ("Scroll", "Zoom in/out"),
+                        ("Double-click", "Zoom into folder"),
+                        ("Right-click", "Zoom out"),
+                        ("Drag", "Pan view"),
+                        ("Backspace / Esc", "Zoom out"),
+                    ];
+                    for (key, action) in shortcut_rows {
+                        ui.horizontal(|ui| {
+                            ui.add_space(indent);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(col_w, 18.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(key).color(tk.accent_readable),
+                                    );
+                                },
+                            );
+                            ui.add_space(gap);
+                            ui.label(egui::RichText::new(action).color(tk.muted));
                         });
-                        });
-                    });
+                    }
                 });
                 if let Some(path) = scan_target {
                     self.start_scan(path);
