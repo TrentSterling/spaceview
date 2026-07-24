@@ -1,4 +1,21 @@
-﻿## v0.14.0 - house theme + Discord-style gradients
+﻿## v0.15.0 - gradient v2 + the editor
+
+- Multi-stop gradient system: 2-4 color pegs instead of a single diluted wash.
+  Pegs come from colormagic harmony rules (never clash), a curated preset
+  shelf (Galaxy Punch, Chrome Sunset, Vaporwave, Miami Nights, Concrete...),
+  or full Custom mode with per-peg color pickers.
+- Gradient editor window: live ramp preview, direction dial (0-360), Discord
+  style intensity (100% = pure peg colors at the extents, with end-hold
+  easing so the extremes actually show their color), Magic button that rolls
+  a colormagic flavor palette straight into the pegs.
+- Discord ground parity: every theme tints the WHOLE ground toward its hue -
+  Cotton Candy is pink everywhere, not pink-widgets-on-navy.
+- Contrast guarantees: killed override_text_color (it steamrolled the
+  selected-row contrast), selection fill derived from what is actually drawn.
+- Floating windows near-solid over the wash (readability), app icon in the
+  top bar, movable About/Confirm/Drive dialogs, chrome text unselectable,
+  prefs no longer rewritten at 60Hz mid-slider-drag.
+## v0.14.0 - house theme + Discord-style gradients
 
 - Full TrontStack house theme for the chrome: colormagic engine (accent picker,
   32 premades, randomizer, WCAG smart contrast), runtime-swappable, persisted.

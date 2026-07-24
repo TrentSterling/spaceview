@@ -110,6 +110,15 @@ pub struct Prefs {
     pub theme_accent: Option<String>,
     /// Discord-style background wash. Default ON.
     pub gradient: bool,
+    /// Gradient v2 knobs (Discord parity): direction dial, color intensity,
+    /// number of harmony pegs (2..=4), harmony rule index.
+    pub gradient_angle: f32,
+    pub gradient_intensity: f32,
+    pub gradient_pegs: u8,
+    pub gradient_harmony: u8,
+    pub gradient_preset: i16,
+    /// Custom-mode pegs as comma-joined hex ("" = defaults).
+    pub gradient_custom: String,
 }
 
 pub fn prefs_path() -> Option<PathBuf> {
@@ -129,6 +138,12 @@ pub fn load_prefs() -> Prefs {
         theme_name: "Cyan".to_string(),
         theme_accent: None,
         gradient: true,
+        gradient_angle: 135.0,
+        gradient_intensity: 0.45,
+        gradient_pegs: 3,
+        gradient_harmony: 0,
+        gradient_preset: -1,
+        gradient_custom: String::new(),
     };
     if let Some(content) = prefs_path().and_then(|p| std::fs::read_to_string(p).ok()) {
         for line in content.lines() {
@@ -152,6 +167,14 @@ pub fn load_prefs() -> Prefs {
                         prefs.theme_accent = if v.is_empty() { None } else { Some(v.to_string()) };
                     }
                     "gradient" => prefs.gradient = val.trim() == "true",
+                    "gradient_angle" => prefs.gradient_angle = val.trim().parse().unwrap_or(135.0),
+                    "gradient_intensity" => {
+                        prefs.gradient_intensity = val.trim().parse().unwrap_or(0.45)
+                    }
+                    "gradient_pegs" => prefs.gradient_pegs = val.trim().parse().unwrap_or(3),
+                    "gradient_harmony" => prefs.gradient_harmony = val.trim().parse().unwrap_or(0),
+                    "gradient_preset" => prefs.gradient_preset = val.trim().parse().unwrap_or(-1),
+                    "gradient_custom" => prefs.gradient_custom = val.trim().to_string(),
                     _ => {}
                 }
             }
@@ -166,12 +189,18 @@ fn save_prefs(prefs: &Prefs) {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut content = format!(
-            "hide_about={}\ndark_mode={}\ntheme_name={}\ntheme_accent={}\ngradient={}",
+            "hide_about={}\ndark_mode={}\ntheme_name={}\ntheme_accent={}\ngradient={}\ngradient_angle={}\ngradient_intensity={}\ngradient_pegs={}\ngradient_harmony={}\ngradient_preset={}\ngradient_custom={}",
             prefs.hide_about,
             prefs.dark_mode,
             prefs.theme_name,
             prefs.theme_accent.as_deref().unwrap_or(""),
             prefs.gradient,
+            prefs.gradient_angle,
+            prefs.gradient_intensity,
+            prefs.gradient_pegs,
+            prefs.gradient_harmony,
+            prefs.gradient_preset,
+            prefs.gradient_custom,
         );
         if let (Some(x), Some(y), Some(w), Some(h)) =
             (prefs.window_x, prefs.window_y, prefs.window_w, prefs.window_h)
@@ -223,6 +252,7 @@ pub struct SpaceViewApp {
     theme_name: String,
     theme_accent: Option<String>,
     gradient: bool,
+    show_gradient_editor: bool,
 
     // About dialog
     hide_about_on_start: bool,
@@ -353,6 +383,20 @@ impl SpaceViewApp {
         // Install the chrome theme (colormagic) before the first frame, so
         // there's no default-egui flash on startup.
         let initial_tokens = theme::resolve(&prefs.theme_name, prefs.theme_accent.as_ref(), prefs.dark_mode);
+        let mut grad_cfg = theme::GradientCfg {
+            angle_deg: prefs.gradient_angle,
+            intensity: prefs.gradient_intensity.clamp(0.0, 1.0),
+            pegs: prefs.gradient_pegs.clamp(2, 4),
+            harmony: prefs.gradient_harmony,
+            preset: prefs.gradient_preset,
+            ..Default::default()
+        };
+        for (i, hex) in prefs.gradient_custom.split(',').take(4).enumerate() {
+            if let Some(rgb) = color::hex_to_rgb(hex) {
+                grad_cfg.custom[i] = rgb;
+            }
+        }
+        theme::set_gradient_cfg(grad_cfg);
         theme::set_theme(&cc.egui_ctx, initial_tokens, prefs.gradient);
 
         // Spawn background version check
@@ -409,6 +453,7 @@ impl SpaceViewApp {
             theme_name: prefs.theme_name.clone(),
             theme_accent: prefs.theme_accent.clone(),
             gradient: prefs.gradient,
+            show_gradient_editor: false,
             hide_about_on_start: prefs.hide_about,
             show_about: !prefs.hide_about,
             icon_texture: None,
@@ -636,6 +681,17 @@ impl SpaceViewApp {
             theme_name: self.theme_name.clone(),
             theme_accent: self.theme_accent.clone(),
             gradient: self.gradient,
+            gradient_angle: theme::gradient_cfg().angle_deg,
+            gradient_intensity: theme::gradient_cfg().intensity,
+            gradient_pegs: theme::gradient_cfg().pegs,
+            gradient_harmony: theme::gradient_cfg().harmony,
+            gradient_preset: theme::gradient_cfg().preset,
+            gradient_custom: theme::gradient_cfg()
+                .custom
+                .iter()
+                .map(|rgb| color::rgb_to_hex(*rgb))
+                .collect::<Vec<_>>()
+                .join(","),
         }
     }
 
@@ -1191,6 +1247,210 @@ impl eframe::App for SpaceViewApp {
 
                     if ui.checkbox(&mut self.gradient, "Gradient").changed() {
                         save_prefs(&self.current_prefs());
+                    }
+                    // Gradient editor toggle (the editor itself is a proper
+                    // movable Window below — nested menu popovers were fucky).
+                    if self.gradient
+                        && ui
+                            .selectable_label(self.show_gradient_editor, "Editor")
+                            .on_hover_text("Gradient editor: direction, intensity, pegs, magic")
+                            .clicked()
+                    {
+                        self.show_gradient_editor = !self.show_gradient_editor;
+                    }
+                    if self.gradient && self.show_gradient_editor {
+                        let mut open = true;
+                        egui::Window::new("Gradient")
+                            .open(&mut open)
+                            .resizable(false)
+                            .default_width(260.0)
+                            .show(ui.ctx(), |ui| {
+                                let tk = theme::t();
+                                let mut cfg = theme::gradient_cfg();
+                                let mut dirty = false;
+
+                                // Live preview ramp (the composited result).
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(ui.available_width(), 20.0),
+                                    egui::Sense::hover(),
+                                );
+                                const SLICES: usize = 48;
+                                for i in 0..SLICES {
+                                    let t0 = i as f32 / SLICES as f32;
+                                    let t1 = (i + 1) as f32 / SLICES as f32;
+                                    let r = egui::Rect::from_min_max(
+                                        egui::pos2(rect.left() + rect.width() * t0, rect.top()),
+                                        egui::pos2(rect.left() + rect.width() * t1, rect.bottom()),
+                                    );
+                                    ui.painter().rect_filled(
+                                        r,
+                                        0.0,
+                                        theme::ramp_sample(&tk, (t0 + t1) * 0.5),
+                                    );
+                                }
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    2.0,
+                                    egui::Stroke::new(1.0, tk.edge),
+                                    egui::StrokeKind::Middle,
+                                );
+                                ui.add_space(6.0);
+
+                                ui.label("Direction");
+                                dirty |= ui
+                                    .add(
+                                        egui::Slider::new(&mut cfg.angle_deg, 0.0..=360.0)
+                                            .suffix("°"),
+                                    )
+                                    .changed();
+                                ui.label("Intensity");
+                                dirty |= ui
+                                    .add(
+                                        egui::Slider::new(&mut cfg.intensity, 0.0..=1.0)
+                                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                                    )
+                                    .changed();
+                                ui.separator();
+
+                                // Source mode chips: harmony / preset / custom.
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(cfg.preset == -1, "Harmony").clicked() {
+                                        cfg.preset = -1;
+                                        dirty = true;
+                                    }
+                                    if ui.selectable_label(cfg.preset >= 0, "Presets").clicked() {
+                                        if cfg.preset < 0 {
+                                            cfg.preset = 0;
+                                        }
+                                        dirty = true;
+                                    }
+                                    if ui.selectable_label(cfg.preset == -2, "Custom").clicked() {
+                                        cfg.preset = -2;
+                                        dirty = true;
+                                    }
+                                });
+
+                                if cfg.preset == -1 {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Pegs");
+                                        for n in 2..=4u8 {
+                                            if ui
+                                                .selectable_label(cfg.pegs == n, format!("{n}"))
+                                                .clicked()
+                                            {
+                                                cfg.pegs = n;
+                                                dirty = true;
+                                            }
+                                        }
+                                    });
+                                    let rule_name = color::HARMONY_RULES
+                                        [(cfg.harmony as usize) % color::HARMONY_RULES.len()];
+                                    egui::ComboBox::from_id_salt("gradient_harmony")
+                                        .selected_text(rule_name)
+                                        .width(200.0)
+                                        .show_ui(ui, |ui| {
+                                            for (i, rule) in color::HARMONY_RULES.iter().enumerate()
+                                            {
+                                                if ui
+                                                    .selectable_label(cfg.harmony == i as u8, *rule)
+                                                    .clicked()
+                                                {
+                                                    cfg.harmony = i as u8;
+                                                    dirty = true;
+                                                }
+                                            }
+                                        });
+                                } else if cfg.preset >= 0 {
+                                    let preset_label = theme::GRADIENT_PRESETS
+                                        .get(cfg.preset as usize)
+                                        .map(|(n, _)| *n)
+                                        .unwrap_or("Preset");
+                                    egui::ComboBox::from_id_salt("gradient_preset")
+                                        .selected_text(preset_label)
+                                        .width(200.0)
+                                        .show_ui(ui, |ui| {
+                                            for (i, (name, _)) in
+                                                theme::GRADIENT_PRESETS.iter().enumerate()
+                                            {
+                                                if ui
+                                                    .selectable_label(cfg.preset == i as i16, *name)
+                                                    .clicked()
+                                                {
+                                                    cfg.preset = i as i16;
+                                                    dirty = true;
+                                                }
+                                            }
+                                        });
+                                } else {
+                                    // Custom: your colors, your rules.
+                                    ui.horizontal(|ui| {
+                                        ui.label("Pegs");
+                                        for n in 2..=4u8 {
+                                            if ui
+                                                .selectable_label(cfg.pegs == n, format!("{n}"))
+                                                .clicked()
+                                            {
+                                                cfg.pegs = n;
+                                                dirty = true;
+                                            }
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        for i in 0..(cfg.pegs.clamp(2, 4) as usize) {
+                                            let mut c = egui::Color32::from_rgb(
+                                                cfg.custom[i][0],
+                                                cfg.custom[i][1],
+                                                cfg.custom[i][2],
+                                            );
+                                            if ui.color_edit_button_srgba(&mut c).changed() {
+                                                cfg.custom[i] = [c.r(), c.g(), c.b()];
+                                                dirty = true;
+                                            }
+                                        }
+                                    });
+                                }
+
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button("Magic")
+                                        .on_hover_text(
+                                            "Roll a colormagic flavor palette into custom pegs",
+                                        )
+                                        .clicked()
+                                    {
+                                        let mut rng = color::Rng::from_clock();
+                                        let kind =
+                                            color::PaletteKind::ALL[rng.range(0, 5) as usize];
+                                        let cols =
+                                            color::generate_random_palette(kind, 4, &mut rng);
+                                        for (i, h) in cols.iter().take(4).enumerate() {
+                                            cfg.custom[i] = color::hsl_to_rgb(h.h, h.s, h.l);
+                                        }
+                                        cfg.preset = -2;
+                                        cfg.pegs = if rng.range(0, 1) == 0 { 3 } else { 4 };
+                                        cfg.angle_deg = rng.range(0, 359) as f32;
+                                        dirty = true;
+                                    }
+                                    if ui.button("Reset").clicked() {
+                                        cfg = theme::GradientCfg::default();
+                                        dirty = true;
+                                    }
+                                });
+
+                                if dirty {
+                                    // Apply live for instant preview...
+                                    theme::set_gradient_cfg(cfg);
+                                }
+                                // ...but only hit the disk once the drag ends —
+                                // Slider::changed() fires EVERY FRAME mid-drag.
+                                if dirty && !ui.ctx().input(|i| i.pointer.primary_down()) {
+                                    save_prefs(&self.current_prefs());
+                                }
+                            });
+                        if !open {
+                            self.show_gradient_editor = false;
+                        }
                     }
 
                     // Color mode toggle (cycles Depth -> Age -> Extension -> Depth)

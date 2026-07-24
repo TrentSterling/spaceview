@@ -115,6 +115,9 @@ pub fn corner_radius_lg() -> CornerRadius {
 pub fn set_theme(ctx: &egui::Context, tk: Tokens, gradient: bool) {
     *CURRENT.write().unwrap() = tk;
     ctx.set_visuals(build_visuals(tk, gradient));
+    // Chrome text is chrome, not a document: no I-beam, no text selection on
+    // labels (the wordmark was selectable — same fix TrontEQ/TrontSnap carry).
+    ctx.style_mut(|s| s.interaction.selectable_labels = false);
 }
 
 /// egui Visuals derived entirely from the given tokens. `gradient` controls
@@ -141,7 +144,12 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     let panel_alpha: u8 = if gradient { 216 } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), panel_alpha);
 
-    v.window_fill = panel;
+    // Floating windows (About, dialogs, the gradient editor) carry paragraphs
+    // of text and stack OVER already-translucent panels, so they get a
+    // near-solid fill — "almost too clear" otherwise (Trent-flagged).
+    let window_alpha: u8 = if gradient { 246 } else { 255 };
+    v.window_fill =
+        Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), window_alpha);
     v.panel_fill = panel;
     v.faint_bg_color = tk.hover;
     v.extreme_bg_color = tk.bg;
@@ -351,71 +359,186 @@ pub fn resolve(name: &str, accent_hex: Option<&String>, dark: bool) -> Tokens {
     ground(dark)
 }
 
-// ---- background gradient ---------------------------------------------------
+// ---- background gradient v2 (Discord parity) --------------------------------
+//
+// The v1 wash mixed every corner toward bg, so the extents never showed real
+// color (Trent: "too blended and weak... at the extents we should see the end
+// stop colors"). V2 is a true multi-stop ramp, Discord-style:
+//   - 2..=4 PEGS derived from the accent via colormagic harmony rules, so the
+//     stops can NEVER clash (Discord's trick, our engine).
+//   - DIRECTION: any angle, like Discord's Gradient Direction dial.
+//   - INTENSITY: 0..1 like Discord's Color Intensity. At 1.0 the background IS
+//     the pure peg ramp (panels float on top); at low values it fades to bg.
+//   - END-HOLD easing: the ramp saturates to pure first/last peg over the
+//     outer ~12% so the extremes read as their color instead of a blend.
 
-/// Discord-style dynamic background wash, derived from the live tokens.
-/// TrontStack canonical recipe (same shape across every app):
-///   top-left = bg -> toward accent (strongest)
-///   top-right = bg -> toward accent (half as strong)
-///   bottom-left = bg -> toward a deeper/darker accent (hue +40deg, value halved)
-///   bottom-right = bg darkened
-/// Light mode blends the same way but pulls back toward white so it stays
-/// airy instead of muddy.
-///
-/// SpaceView-specific tuning: unlike a viewport app where the 3D/2D canvas IS
-/// the exposed background, SpaceView's TopBottomPanel (top+status bars) and
-/// CentralPanel tile the ENTIRE window edge to edge. At the spec's baseline
-/// ~14/7/8/6% blend, the ~90%-opaque panel fill (`build_visuals`'s
-/// `panel_alpha`) dilutes that down to an imperceptible 1-3 RGB units of
-/// on-screen spread (measured). BLEND is scaled up ~4x from the baseline so
-/// the wash actually reads once composited under the chrome, while alpha
-/// stays in-spec so text contrast is untouched.
-const BLEND: f32 = 8.0; // Trent: "a bit subtle, I'd like stronger" — doubled from 4.0
+#[derive(Clone, Copy, PartialEq)]
+pub struct GradientCfg {
+    /// Degrees; 0 = left->right, 90 = top->bottom, 135 = TL->BR diagonal.
+    pub angle_deg: f32,
+    /// 0..1. Discord "Color Intensity". 1.0 = pure peg colors as the ground.
+    pub intensity: f32,
+    /// 2..=4 color stops (harmony mode).
+    pub pegs: u8,
+    /// Index into color::HARMONY_RULES used to derive the pegs from the accent.
+    pub harmony: u8,
+    /// >= 0: index into GRADIENT_PRESETS (curated named ramps, accent ignored).
+    /// -1: harmony mode (pegs derived from the live accent).
+    /// -2: custom mode (the `custom` pegs below, user-picked, used verbatim).
+    pub preset: i16,
+    /// Manual pegs for custom mode (first `pegs` entries used).
+    pub custom: [Rgb; 4],
+}
 
-pub fn gradient_colors(tk: &Tokens) -> [Color32; 4] {
-    let bg = rgb_of(tk.bg);
-    let accent = rgb_of(tk.accent);
-    let a = color::rgb_to_hsl(accent);
-
-    if tk.dark {
-        let deep = color::hsl_to_rgb((a.h + 40.0).rem_euclid(360.0), a.s, (a.l * 0.5).max(6.0));
-        [
-            c32(color::mix_colors(bg, accent, (0.14 * BLEND).min(0.85))), // top-left
-            c32(color::mix_colors(bg, accent, (0.07 * BLEND).min(0.85))), // top-right
-            c32(color::mix_colors(bg, deep, (0.08 * BLEND).min(0.85))),   // bottom-left
-            c32(color::mix_colors(bg, [0, 0, 0], (0.06 * BLEND).min(0.85))), // bottom-right
-        ]
-    } else {
-        let white = [255u8, 255, 255];
-        let deep = color::hsl_to_rgb((a.h + 40.0).rem_euclid(360.0), (a.s * 0.7).max(20.0), (a.l * 1.25).min(85.0));
-        // Two-stage: blend toward accent/deep first (BLEND-scaled, same as
-        // dark mode), then pull most of the way back toward white so it
-        // stays airy instead of muddy — the pull-back fraction is fixed
-        // (it's the "stay light" knob, not the "how strong" knob).
-        let tl = color::mix_colors(color::mix_colors(bg, accent, (0.10 * BLEND).min(0.7)), white, 0.45);
-        let tr = color::mix_colors(color::mix_colors(bg, accent, (0.05 * BLEND).min(0.7)), white, 0.55);
-        let bl = color::mix_colors(color::mix_colors(bg, deep, (0.06 * BLEND).min(0.7)), white, 0.40);
-        let br = color::mix_colors(bg, white, (0.11 * BLEND).min(0.7));
-        [c32(tl), c32(tr), c32(bl), c32(br)]
+impl Default for GradientCfg {
+    fn default() -> Self {
+        GradientCfg {
+            angle_deg: 135.0,
+            intensity: 0.45,
+            pegs: 3,
+            harmony: 0,
+            preset: -1,
+            custom: [[86, 204, 255], [153, 14, 165], [253, 79, 80], [37, 223, 196]],
+        }
     }
 }
 
-/// Paint the gradient as one 4-vertex mesh into the background layer, before
-/// any panel draws. Cost is a single quad — negligible.
+/// Curated, named multi-stop ramps — the "Gradients of the Galaxy / chrome
+/// sunset" shelf. Hand-picked hex stops (2-3 per ramp), used verbatim as pegs
+/// in dark mode and lifted toward white in light mode. Creative names are
+/// load-bearing; nobody rolls "Preset 7".
+pub const GRADIENT_PRESETS: &[(&str, &[&str])] = &[
+    ("Galaxy Punch", &["#FD4F50", "#990EA5"]),
+    ("Nebula Rush", &["#E71B7B", "#8324FB"]),
+    ("Ultraviolet", &["#B501AA", "#FD37C8"]),
+    ("Solar Flare", &["#FC4D1D", "#F1358A"]),
+    ("Chrome Sunset", &["#C0C6CC", "#FFB88C", "#DE4313"]),
+    ("Vaporwave", &["#FF6FD8", "#3813C2"]),
+    ("Synthwave Drive", &["#DC28B2", "#2A41D2"]),
+    ("Deep Space", &["#4D153C", "#B30F40"]),
+    ("Golden Hour", &["#FEF528", "#B93B41"]),
+    ("Blue Hour", &["#2AA9E9", "#005AFF"]),
+    ("Tide Pool", &["#0DBEBA", "#00FFFB"]),
+    ("Aurora Sky", &["#00C9FF", "#92FE9D"]),
+    ("Toxic Slime", &["#25DFC4", "#E4E518"]),
+    ("Matrix Rain", &["#00F032", "#00A0EA"]),
+    ("Cherry Cola", &["#EB3349", "#F45C43"]),
+    ("Berry Smoothie", &["#FF1B6B", "#45CAFF"]),
+    ("Miami Nights", &["#FF0080", "#7928CA", "#4A00E0"]),
+    ("Ember Fade", &["#F83600", "#F9D423"]),
+    ("Concrete", &["#3A3D42", "#95989E"]),
+];
+
+static GRAD_CFG: LazyLock<RwLock<GradientCfg>> = LazyLock::new(|| RwLock::new(GradientCfg::default()));
+
+pub fn gradient_cfg() -> GradientCfg {
+    *GRAD_CFG.read().unwrap()
+}
+pub fn set_gradient_cfg(cfg: GradientCfg) {
+    *GRAD_CFG.write().unwrap() = cfg;
+}
+
+/// The peg colors: accent -> harmony spread, adapted to the mode so dark
+/// themes get deep rich stops and light themes get pastel ones. WCAG isn't a
+/// factor here (no text sits on the raw ramp; panels carry the text).
+pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
+    let cfg = gradient_cfg();
+
+    // Custom mode: the user's exact colors, no adult supervision.
+    if cfg.preset == -2 {
+        return cfg.custom[..(cfg.pegs.clamp(2, 4) as usize)].to_vec();
+    }
+
+    // Curated preset: designed stops used verbatim (dark), lifted toward
+    // white in light mode so the page stays airy under dark text.
+    if cfg.preset >= 0 {
+        if let Some((_, hexes)) = GRADIENT_PRESETS.get(cfg.preset as usize) {
+            return hexes
+                .iter()
+                .filter_map(|h| color::hex_to_rgb(h))
+                .map(|rgb| if tk.dark { rgb } else { color::mix_colors(rgb, [255, 255, 255], 0.40) })
+                .collect();
+        }
+    }
+
+    // Harmony mode: pegs derived from the live accent, clash-proof by rule.
+    let rule = color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
+    let base = color::rgb_to_hsl(rgb_of(tk.accent));
+    let spread = color::generate_harmony(base, rule);
+    spread
+        .into_iter()
+        .take((cfg.pegs.clamp(2, 4)) as usize)
+        .map(|h| {
+            // Mode-adapt lightness: deep + rich on dark, pastel on light.
+            let l = if tk.dark { h.l.clamp(20.0, 42.0) } else { h.l.clamp(68.0, 88.0) };
+            let s = if tk.dark { h.s.clamp(35.0, 90.0) } else { h.s.clamp(30.0, 75.0) };
+            color::hsl_to_rgb(h.h, s, l)
+        })
+        .collect()
+}
+
+/// Sample the peg ramp at t in [0,1], with end-hold easing so the outer ~12%
+/// on each side sits at the pure first/last peg.
+fn ramp(pegs: &[Rgb], t: f32) -> Rgb {
+    let t = ((t - 0.5) * 1.28 + 0.5).clamp(0.0, 1.0);
+    let n = pegs.len();
+    if n == 1 {
+        return pegs[0];
+    }
+    let scaled = t * (n - 1) as f32;
+    let i = (scaled.floor() as usize).min(n - 2);
+    let frac = scaled - i as f32;
+    color::mix_colors(pegs[i], pegs[i + 1], frac)
+}
+
+/// Paint the gradient as a fine vertex-colored grid into the background layer.
+/// A grid (not one quad) because the ramp is multi-stop and runs at an
+/// arbitrary angle; 16x16 vertices is still a trivially cheap single mesh.
 pub fn paint_gradient(ctx: &egui::Context, tk: &Tokens) {
     let rect = ctx.screen_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let [tl, tr, bl, br] = gradient_colors(tk);
+    let cfg = gradient_cfg();
+    let pegs = gradient_pegs(tk);
+    let bg = rgb_of(tk.bg);
 
+    let a = cfg.angle_deg.to_radians();
+    let (dx, dy) = (a.cos(), a.sin());
+    let c = rect.center();
+    // Projection half-extent of the rect onto the gradient axis.
+    let half = (rect.width() * 0.5 * dx.abs()) + (rect.height() * 0.5 * dy.abs());
+    let half = half.max(1.0);
+
+    const N: usize = 16;
     let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), tl);
-    mesh.colored_vertex(rect.right_top(), tr);
-    mesh.colored_vertex(rect.left_bottom(), bl);
-    mesh.colored_vertex(rect.right_bottom(), br);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
+    for gy in 0..=N {
+        for gx in 0..=N {
+            let p = egui::pos2(
+                rect.left() + rect.width() * gx as f32 / N as f32,
+                rect.top() + rect.height() * gy as f32 / N as f32,
+            );
+            let t = (((p.x - c.x) * dx + (p.y - c.y) * dy) / half) * 0.5 + 0.5;
+            let col = color::mix_colors(bg, ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0));
+            mesh.colored_vertex(p, c32(col));
+        }
+    }
+    let w = (N + 1) as u32;
+    for gy in 0..N as u32 {
+        for gx in 0..N as u32 {
+            let i = gy * w + gx;
+            mesh.add_triangle(i, i + 1, i + w);
+            mesh.add_triangle(i + 1, i + w + 1, i + w);
+        }
+    }
 
     ctx.layer_painter(egui::LayerId::background()).add(egui::Shape::mesh(mesh));
+}
+
+/// Sample the final composited ramp (pegs + end-hold easing + intensity mix
+/// toward bg) at t in [0,1] — powers the editor's live preview bar.
+pub fn ramp_sample(tk: &Tokens, t: f32) -> Color32 {
+    let cfg = gradient_cfg();
+    let pegs = gradient_pegs(tk);
+    c32(color::mix_colors(rgb_of(tk.bg), ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0)))
 }
