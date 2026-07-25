@@ -175,7 +175,14 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     v.selection.stroke = Stroke::new(1.0, c32(sel_txt));
     v.hyperlink_color = tk.accent_readable;
     v.warn_fg_color = tk.accent_readable;
-    v.error_fg_color = Color32::from_rgb(220, 80, 60);
+    // Semantic red keeps its MEANING (danger reads as danger regardless of the
+    // theme's hue) but not its washout: a hardcoded literal is the one thing the
+    // tonal ladder never sees, so walk it against the panel it is drawn on.
+    v.error_fg_color = c32(color::readable_against(
+        [220, 80, 60],
+        rgb_of(tk.panel),
+        color::LC_MUTED,
+    ));
 
     let r = corner_radius();
     let txt = Stroke::new(1.0, tk.text);

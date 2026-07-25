@@ -506,6 +506,44 @@ pub fn scale_from_seed(seed: Rgb, dark: bool) -> Scale {
     Scale { steps, dark }
 }
 
+/// Make ANY colour safe to draw as ink on a given ground, keeping its hue.
+///
+/// The scale guarantees the colours it generates, but hardcoded literals (a
+/// semantic danger red, a fixed warning amber) never pass through it — they are
+/// exactly the values that survive every theme change and then vanish on the
+/// one ground that happens to match them. This walks lightness away from the
+/// background until APCA clears `target`, with pure black/white as the
+/// unconditional backstop.
+pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
+    let mut best = fg;
+    let mut best_lc = apca_abs(fg, bg);
+    if best_lc >= target {
+        return fg;
+    }
+    let bg_is_light = luminance(bg) > 0.18;
+    let h = rgb_to_hsl(fg);
+    let mut l = h.l;
+    for _ in 0..44 {
+        l = if bg_is_light { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
+        let cand = hsl_to_rgb(h.h, h.s, l);
+        let lc = apca_abs(cand, bg);
+        if lc > best_lc {
+            best_lc = lc;
+            best = cand;
+        }
+        if lc >= target {
+            return cand;
+        }
+    }
+    if best_lc < target {
+        let extreme: Rgb = if bg_is_light { [0, 0, 0] } else { [255, 255, 255] };
+        if apca_abs(extreme, bg) > best_lc {
+            return extreme;
+        }
+    }
+    best
+}
+
 /// The text color to draw ON an arbitrary fill, chosen by APCA from the scale's
 /// own extremes and only falling back to pure white/black when the fill sits in
 /// the murderous midtones. Supersedes [`contrast_color`]'s luminance threshold
