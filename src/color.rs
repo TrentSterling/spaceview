@@ -404,6 +404,54 @@ impl Scale {
     }
 }
 
+/// Is this OKLCH triple inside sRGB without clipping?
+fn in_gamut(big_l: f32, c: f32, hdeg: f32) -> bool {
+    let hrad = hdeg * std::f32::consts::PI / 180.0;
+    let a = c * hrad.cos();
+    let bv = c * hrad.sin();
+    let l_ = big_l + 0.396_337_78 * a + 0.215_803_76 * bv;
+    let m_ = big_l - 0.105_561_346 * a - 0.063_854_17 * bv;
+    let s_ = big_l - 0.089_484_18 * a - 1.291_485_5 * bv;
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+    let lr = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+    let lg = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+    let lb = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
+    const E: f32 = 0.001;
+    (-E..=1.0 + E).contains(&lr) && (-E..=1.0 + E).contains(&lg) && (-E..=1.0 + E).contains(&lb)
+}
+
+/// The lightness at which a hue reaches its maximum chroma: the gamut cusp.
+///
+/// This is why yellow used to come out brown. The ladder puts the solid step at
+/// L 0.62, which is near blue's cusp but far below yellow's (~0.86). Yellow
+/// forced to 0.62 IS brown, and no amount of chroma rescues it. Bright hues have
+/// to be allowed to sit where they actually live.
+///
+/// The ladder still owns structure: only the two SOLID steps follow the cusp, and
+/// their label is chosen by APCA afterwards, so a bright yellow fill simply gets
+/// dark text the way a real one does.
+pub fn cusp_lightness(hdeg: f32) -> f32 {
+    let mut best_l = 0.62;
+    let mut best_c = -1.0f32;
+    let mut big_l = 0.30;
+    while big_l <= 0.96 {
+        let mut lo = 0.0f32;
+        let mut hi = 0.4f32;
+        for _ in 0..14 {
+            let mid = (lo + hi) * 0.5;
+            if in_gamut(big_l, mid, hdeg) { lo = mid } else { hi = mid }
+        }
+        if lo > best_c {
+            best_c = lo;
+            best_l = big_l;
+        }
+        big_l += 0.02;
+    }
+    best_l
+}
+
 /// Push a color's lightness away from `bg` until APCA says it passes `target`,
 /// shedding chroma as it approaches the extremes (high chroma caps achievable
 /// luminance). Returns the best candidate found; falls back to pure white/black,
@@ -467,9 +515,17 @@ pub fn scale_from_seed(seed: Rgb, dark: bool) -> Scale {
     // they must be able to HOST text. There is a crossover band (Y ~ 0.3) where
     // neither white nor black reads well; nudge the fill's lightness out of it,
     // toward the ground's side so the fill stays theme-coherent.
+    // Pull the solid steps toward THIS hue's chroma peak first. Without it every
+    // hue is judged by blue's ladder and the bright ones (yellow, lime, cyan)
+    // come out muddy: yellow at L 0.62 is brown.
+    let cusp = cusp_lightness(h);
     for i in [8usize, 9] {
         let c = (c_seed * cs[i]).min(C_CEIL);
-        let mut l = ls[i];
+        let mut l = ls[i] + (cusp - ls[i]) * 0.72;
+        // step 10 stays a shade off step 9 so hover is still visible
+        if i == 9 {
+            l = if dark { (l + 0.06).min(0.97) } else { (l - 0.06).max(0.12) };
+        }
         for _ in 0..24 {
             let cand = oklch_to_rgb(l, c, h);
             let best = apca_abs([255, 255, 255], cand).max(apca_abs([0, 0, 0], cand));
@@ -520,11 +576,15 @@ pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
     if best_lc >= target {
         return fg;
     }
-    let bg_is_light = luminance(bg) > 0.18;
+    // Which way to walk is decided by APCA, NOT by a WCAG luminance threshold.
+    // On a midtone ground the threshold guesses wrong and walks toward the WORSE
+    // extreme: against #6a9600, black reaches Lc 41.6 while white reaches 67.9.
+    // "Which extreme actually has more contrast here" is the real question.
+    let dark_wins = apca_abs([0, 0, 0], bg) >= apca_abs([255, 255, 255], bg);
     let h = rgb_to_hsl(fg);
     let mut l = h.l;
     for _ in 0..44 {
-        l = if bg_is_light { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
+        l = if dark_wins { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
         let cand = hsl_to_rgb(h.h, h.s, l);
         let lc = apca_abs(cand, bg);
         if lc > best_lc {
@@ -536,7 +596,7 @@ pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
         }
     }
     if best_lc < target {
-        let extreme: Rgb = if bg_is_light { [0, 0, 0] } else { [255, 255, 255] };
+        let extreme: Rgb = if dark_wins { [0, 0, 0] } else { [255, 255, 255] };
         if apca_abs(extreme, bg) > best_lc {
             return extreme;
         }

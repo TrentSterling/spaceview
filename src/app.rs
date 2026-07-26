@@ -358,6 +358,26 @@ struct DriveInfo {
     is_removable: bool,
 }
 
+/// Read-only view of the pegs the ramp actually resolved to.
+///
+/// In Harmony and Presets mode the stops are derived, so there is no picker to
+/// show — which previously meant the row was an empty 26px spacer and you had no
+/// way to know what colours the gradient was built from.
+fn read_only_pegs(ui: &mut egui::Ui, tk: &theme::Tokens) {
+    let pegs = theme::gradient_pegs(tk);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        for p in &pegs {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 20.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, border);
+            ui.painter()
+                .rect_filled(rect.shrink(1.0), 3.0, egui::Color32::from_rgb(p[0], p[1], p[2]));
+            resp.on_hover_text(color::rgb_to_hex(*p));
+        }
+    });
+}
+
 fn enumerate_drives() -> Vec<DriveInfo> {
     use sysinfo::Disks;
     let disks = Disks::new_with_refreshed_list();
@@ -1622,9 +1642,12 @@ impl eframe::App for SpaceViewApp {
                                             }
                                         }
                                     }
-                                    // Height parity with the two-row modes so the
-                                    // window doesn't jump when switching sources.
-                                    ui.add_space(26.0);
+                                    // Harmony and Presets derive their pegs, so
+                                    // there is nothing to edit — but you should
+                                    // still be able to SEE what stops the ramp
+                                    // landed on. Read-only swatches, same height
+                                    // as the spacer they replace.
+                                    read_only_pegs(ui, &tk);
                                 } else {
                                     // Custom: your colors, your rules.
                                     ui.horizontal(|ui| {
