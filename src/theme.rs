@@ -126,7 +126,9 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // Floating windows (About, dialogs, the gradient editor) carry paragraphs
     // of text and stack OVER already-translucent panels, so they get a
     // near-solid fill — "almost too clear" otherwise (Trent-flagged).
-    let window_alpha: u8 = if gradient { 246 } else { 255 };
+    // Fully opaque, not 246: `window_fill` also paints menus and popups, and a
+    // dropdown you have to read should never sit on a moving gradient at all.
+    let window_alpha: u8 = 255;
     v.window_fill =
         Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), window_alpha);
     v.panel_fill = panel;
