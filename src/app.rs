@@ -2432,7 +2432,7 @@ impl eframe::App for SpaceViewApp {
                             tip += &format!("\n{}", p.to_string_lossy());
                         }
                     }
-                    response.clone().on_hover_text(tip);
+                    response.clone().on_hover_text_at_pointer(tip);
                 }
             }
 

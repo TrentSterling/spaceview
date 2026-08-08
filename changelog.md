@@ -1,4 +1,15 @@
-﻿## v0.15.0 - gradient v2 + the editor
+﻿## v0.15.2 - pointer-anchored tooltips + theme correctness
+
+- File information tooltips now open beside the pointer instead of at the
+  treemap's top-left corner, with automatic edge-aware placement.
+- Theme colors use APCA-directed contrast correction so readable text chooses
+  the better light or dark direction on difficult midtone backgrounds.
+- Solid theme colors follow each hue's gamut cusp, keeping bright colors vivid
+  instead of muddying them at a fixed lightness.
+- Single-color themes now remain truly monochrome, and derived theme swatches
+  are read-only where the source mode does not permit direct editing.
+
+## v0.15.0 - gradient v2 + the editor
 
 - Multi-stop gradient system: 2-4 color pegs instead of a single diluted wash.
   Pegs come from colormagic harmony rules (never clash), a curated preset
