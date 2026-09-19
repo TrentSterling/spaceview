@@ -318,6 +318,9 @@ pub struct SpaceViewApp {
     // Perf harness (only active with --synthetic / --stress CLI flags)
     stress: Option<crate::stress::StressScript>,
     metrics: Option<crate::stress::MetricsLogger>,
+    // Scripted screenshots (only active with --shots DIR)
+    shots: Option<crate::shots::ShotScript>,
+    shots_anonymize_pending: bool,
 }
 
 #[derive(Clone)]
@@ -521,6 +524,8 @@ impl SpaceViewApp {
             show_drive_picker: false,
             cached_drives: Vec::new(),
             stress: None,
+            shots: None,
+            shots_anonymize_pending: false,
             metrics: None,
         }
     }
@@ -549,6 +554,151 @@ impl SpaceViewApp {
                 self.metrics = Some(crate::stress::MetricsLogger::new());
             }
         }
+    }
+
+    /// Wire up --shots DIR: scripted landing-page screenshots over the
+    /// synthetic tree. See shots.rs for the sequence.
+    pub fn configure_shots(&mut self, dir: std::path::PathBuf, scan: Option<std::path::PathBuf>) {
+        eprintln!("[shots] writing {} screenshots to {}", crate::shots::SHOTS.len(), dir.display());
+        if let Some(path) = scan {
+            // Real drive, anonymized once the scan lands (see drive_shots).
+            eprintln!("[shots] scanning {} (names are anonymized before anything is drawn)", path.display());
+            self.shots_anonymize_pending = true;
+            self.start_scan(path);
+        } else if self.scan_root.is_none() {
+            // No --synthetic given: use the believable fake drive from showcase.rs.
+            let root = crate::showcase::showcase_tree();
+            eprintln!("[shots] showcase drive: {} files, {} bytes", root.file_count, root.size);
+            let (largest, exts, time_range) = derive_scan_stats(&root);
+            self.ext_color_map.clear();
+            for (i, (ext, _, _)) in exts.iter().enumerate() {
+                self.ext_color_map.insert(ext.clone(), i);
+            }
+            self.cached_largest = Some(largest);
+            self.cached_extensions = Some(exts);
+            self.time_range = time_range;
+            self.cached_duplicates = None;
+            self.scan_root = Some(root);
+            self.scanning = false;
+            self.world_layout = None;
+        }
+        self.shots = Some(crate::shots::ShotScript::new(dir));
+    }
+
+    /// One frame of the screenshot script: apply the step's theme, view and
+    /// color mode on its first frame, let the layout settle, ask the viewport
+    /// for a screenshot, save it when the event comes back, advance, and exit
+    /// after the last one. Called every frame from update() while active.
+    fn drive_shots(&mut self, ctx: &egui::Context) {
+        let (idx, frames, pending, dir) = match self.shots.as_ref() {
+            Some(s) => (s.idx, s.frames, s.pending, s.dir.clone()),
+            None => return,
+        };
+        // --scan: wait for the real scan, then rewrite every name before the
+        // first capture and rebuild every cache that carries names.
+        if self.shots_anonymize_pending {
+            if self.scanning || self.scan_root.is_none() {
+                ctx.request_repaint();
+                return;
+            }
+            let mut root = self.scan_root.take().unwrap();
+            let kept = crate::anonymize::anonymize(&mut root);
+            let report = dir.join("kept-names.txt");
+            let _ = std::fs::write(&report, kept.join("\n"));
+            eprintln!("[shots] anonymized {} files; {} names kept verbatim, listed in {}", root.file_count, kept.len(), report.display());
+            let (largest, exts, time_range) = derive_scan_stats(&root);
+            self.ext_color_map.clear();
+            for (i, (ext, _, _)) in exts.iter().enumerate() {
+                self.ext_color_map.insert(ext.clone(), i);
+            }
+            self.cached_largest = Some(largest);
+            self.cached_extensions = Some(exts);
+            self.time_range = time_range;
+            self.cached_duplicates = None;
+            self.dup_receiver = None;
+            self.scan_root = Some(root);
+            self.world_layout = None;
+            self.invalidate_tree_references();
+            self.shots_anonymize_pending = false;
+        }
+        let shots = crate::shots::SHOTS;
+        if idx >= shots.len() {
+            eprintln!("[shots] done");
+            std::process::exit(0);
+        }
+        let shot = &shots[idx];
+        if frames == 0 {
+            self.show_about = false;
+            self.hide_about_on_start = true;
+            self.show_gradient_editor = false;
+            self.gradient = true;
+            self.dark_mode = shot.dark;
+            let mut cfg = theme::gradient_cfg();
+            if let Some(i) = theme::GRADIENT_PRESETS.iter().position(|(n, _)| *n == shot.preset) {
+                cfg.preset = i as i16;
+                let (_, stops) = theme::GRADIENT_PRESETS[i];
+                let rgbs: Vec<color::Rgb> = stops.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+                if let Some(acc) = theme::most_saturated(&rgbs) {
+                    self.theme_name = shot.preset.to_string();
+                    self.theme_accent = Some(color::rgb_to_hex(acc));
+                    let tk = theme::from_accent(acc, self.dark_mode);
+                    theme::set_theme(ctx, tk, self.gradient);
+                }
+            } else {
+                eprintln!("[shots] unknown preset {:?}, keeping current theme", shot.preset);
+            }
+            cfg.angle_deg = 135.0;
+            theme::set_gradient_cfg(cfg);
+            self.view_mode = match shot.view {
+                0 => ViewMode::Treemap,
+                1 => ViewMode::List,
+                2 => ViewMode::LargestFiles,
+                3 => ViewMode::Extensions,
+                _ => ViewMode::Duplicates,
+            };
+            self.color_mode = match shot.color {
+                0 => ColorMode::Depth,
+                1 => ColorMode::Age,
+                _ => ColorMode::Extension,
+            };
+            self.theme = match shot.treemap {
+                0 => ColorTheme::Rainbow,
+                1 => ColorTheme::Neon,
+                _ => ColorTheme::Ocean,
+            };
+            eprintln!("[shots] {} / {}: {} ({}, {})", idx + 1, shots.len(), shot.file, shot.preset, if shot.dark { "dark" } else { "light" });
+        }
+        let mut next_pending = pending;
+        if frames == crate::shots::SETTLE_FRAMES && !pending {
+            next_pending = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        }
+        let captured = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let mut advance = false;
+        if let Some(img) = captured {
+            let path = dir.join(shot.file);
+            match crate::shots::save_png(&path, &img) {
+                Ok(()) => eprintln!("[shots] wrote {} ({}x{})", path.display(), img.width(), img.height()),
+                Err(e) => eprintln!("[shots] FAILED {}: {}", path.display(), e),
+            }
+            advance = true;
+        }
+        if let Some(s) = self.shots.as_mut() {
+            if advance {
+                s.idx += 1;
+                s.frames = 0;
+                s.pending = false;
+            } else {
+                s.frames += 1;
+                s.pending = next_pending;
+            }
+        }
+        ctx.request_repaint();
     }
 
     /// Drop every cached reference INTO the FileNode tree (hover info, open
@@ -605,34 +755,8 @@ impl SpaceViewApp {
         std::thread::spawn(move || {
             let result = scan_directory_live(&path, progress, snapshot_tx);
             let (largest, extensions, time_range) = if let Some(ref root) = result {
-                // Compute time range on scan thread (not UI thread)
-                let time_range = compute_time_range(root);
-
-                // Collect all files once, derive both largest and extension stats
-                let mut all_files: Vec<(String, u64, String)> = Vec::new();
-                collect_all_files(root, &mut all_files);
-
-                // Extension stats from all files
-                let mut ext_map: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
-                for (name, size, _) in &all_files {
-                    let ext = name.rsplit('.').next()
-                        .filter(|e| e.len() < 10 && *e != name.as_str())
-                        .map(|e| format!(".{}", e.to_lowercase()))
-                        .unwrap_or_else(|| "(no ext)".to_string());
-                    let entry = ext_map.entry(ext).or_insert((0, 0));
-                    entry.0 += size;
-                    entry.1 += 1;
-                }
-                let mut ext_list: Vec<(String, u64, u64)> = ext_map.into_iter()
-                    .map(|(ext, (size, count))| (ext, size, count))
-                    .collect();
-                ext_list.sort_by(|a, b| b.1.cmp(&a.1));
-
-                // Largest 1000 files
-                all_files.sort_by(|a, b| b.1.cmp(&a.1));
-                all_files.truncate(1000);
-
-                (Some(all_files), Some(ext_list), time_range)
+                let (l, e, tr) = derive_scan_stats(root);
+                (Some(l), Some(e), tr)
             } else {
                 (None, None, (0, 0))
             };
@@ -805,6 +929,11 @@ impl eframe::App for SpaceViewApp {
                 }
                 m.flush_log(walked);
             }
+        }
+
+        // Scripted screenshots (--shots): theme, view, capture, next, exit.
+        if self.shots.is_some() {
+            self.drive_shots(ctx);
         }
 
         // Perf-harness termination: exit once the scripted duration elapsed.
@@ -3403,6 +3532,33 @@ fn find_dir_by_path<'a>(root: &'a FileNode, path: &[String]) -> Option<&'a FileN
 }
 
 /// Compute (min, max) modified timestamps across all files in the tree.
+/// Everything the non-treemap views need, derived once from a finished tree:
+/// the 1000 largest files, per-extension totals (largest first) and the
+/// oldest/newest modified range for the age map. Runs on the scan thread for a
+/// real scan and on the UI thread for the synthetic showcase drive.
+fn derive_scan_stats(root: &FileNode) -> (Vec<(String, u64, String)>, Vec<(String, u64, u64)>, (u64, u64)) {
+    let time_range = compute_time_range(root);
+    let mut all_files: Vec<(String, u64, String)> = Vec::new();
+    collect_all_files(root, &mut all_files);
+    let mut ext_map: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+    for (name, size, _) in &all_files {
+        let ext = name.rsplit('.').next()
+            .filter(|e| e.len() < 10 && *e != name.as_str())
+            .map(|e| format!(".{}", e.to_lowercase()))
+            .unwrap_or_else(|| "(no ext)".to_string());
+        let entry = ext_map.entry(ext).or_insert((0, 0));
+        entry.0 += size;
+        entry.1 += 1;
+    }
+    let mut ext_list: Vec<(String, u64, u64)> = ext_map.into_iter()
+        .map(|(ext, (size, count))| (ext, size, count))
+        .collect();
+    ext_list.sort_by(|a, b| b.1.cmp(&a.1));
+    all_files.sort_by(|a, b| b.1.cmp(&a.1));
+    all_files.truncate(1000);
+    (all_files, ext_list, time_range)
+}
+
 fn compute_time_range(node: &FileNode) -> (u64, u64) {
     let mut min_t = u64::MAX;
     let mut max_t = 0u64;

@@ -21,3 +21,6 @@ stress_log.csv
 stress_summary.txt
 
 verify_shots/
+
+# scripted screenshot output (--shots)
+tools/shots/

@@ -11,21 +11,22 @@
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpaceView - Disk Space Visualizer</title>
-    <meta name="description" content="SpaceView is a fast disk space visualizer built in Rust + egui. 5 view modes, duplicate detection, extension filtering, live scanning. A modern SpaceMonger clone.">
+    <title>SpaceView by Tront: Free Disk Space Visualizer for Windows</title>
+    <meta name="description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
+    <meta name="author" content="Trent Sterling (Tront)">
     <link rel="canonical" href="https://tront.xyz/spaceview/" />
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://tront.xyz/spaceview/">
-    <meta property="og:title" content="SpaceView - Disk Space Visualizer">
-    <meta property="og:description" content="Modern SpaceMonger clone built in Rust + egui. 5 view modes, duplicate detection, extension filtering, live scanning. Single 7 MB binary.">
-    <meta property="og:image" content="https://tront.xyz/blog/assets/img/blog/spaceview-og.png">
+    <meta property="og:title" content="SpaceView by Tront: Free Disk Space Visualizer for Windows">
+    <meta property="og:description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
+    <meta property="og:image" content="https://tront.xyz/spaceview/assets/og-image.png?v=2">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="SpaceView - Disk Space Visualizer">
-    <meta name="twitter:description" content="Modern SpaceMonger clone built in Rust + egui. 5 view modes, duplicate detection, extension filtering, live scanning. Single 7 MB binary.">
-    <meta name="twitter:image" content="https://tront.xyz/blog/assets/img/blog/spaceview-og.png">
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"SpaceView","description":"Fast disk space visualizer built in Rust with squarified treemaps and smooth camera.","url":"https://tront.xyz/spaceview/","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows","author":{"@type":"Person","name":"Trent Sterling","url":"https://tront.xyz"}}</script>
+    <meta name="twitter:title" content="SpaceView by Tront: Free Disk Space Visualizer for Windows">
+    <meta name="twitter:description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
+    <meta name="twitter:image" content="https://tront.xyz/spaceview/assets/og-image.png?v=2">
+    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"SoftwareApplication","name":"SpaceView","alternateName":["SpaceView by Tront","Tront SpaceView","SpaceView disk visualizer"],"description":"SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.","url":"https://tront.xyz/spaceview/","image":"https://tront.xyz/spaceview/assets/og-image.png?v=2","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows","softwareVersion":"0.15.2","downloadUrl":"https://github.com/TrentSterling/spaceview/releases","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Trent Sterling","alternateName":"Tront","url":"https://tront.xyz"},"publisher":{"@type":"Organization","name":"Tront","url":"https://tront.xyz","logo":"https://tront.xyz/assets/img/tront.png"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Tront","item":"https://tront.xyz/"},{"@type":"ListItem","position":2,"name":"SpaceView","item":"https://tront.xyz/spaceview/"}]}]}</script>
     <link rel="icon" href="/favicon.png" type="image/png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -159,11 +160,11 @@
     </nav>
     <div class="container">
         <section class="hero">
-            <span class="hero-label">Disk Space Visualizer</span>
+            <span class="hero-label">Disk Space Visualizer by Tront</span>
             <h1>SpaceView</h1>
-            <p class="subtitle">See where your disk space went. A modern SpaceMonger clone built in Rust + egui - fast, tiny, and actually useful.</p>
+            <p class="subtitle">See where your disk space went. SpaceView by Tront (Trent Sterling) is a modern SpaceMonger clone built in Rust + egui: fast, tiny, themeable, and actually useful.</p>
             <div class="hero-links">
-                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download <span class="version-badge">v0.12.0</span></a>
+                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download <span class="version-badge">v0.15.2</span></a>
                 <a href="https://github.com/TrentSterling/spaceview" class="btn btn-secondary" target="_blank">GitHub</a>
                 <a href="/blog/posts/spaceview/" class="btn btn-secondary" target="_blank">Blog Post</a>
             </div>
@@ -174,11 +175,17 @@
                 <h2>Screenshots</h2>
             </div>
             <div class="screenshot-gallery">
-                <img class="screenshot-hero" src="/blog/assets/img/blog/spaceview.png" alt="SpaceView scanning a drive with rainbow color mode">
+                <img class="screenshot-hero" src="/spaceview/assets/hero-chrome-sunset.png" alt="SpaceView by Tront: treemap of a 1.8 TB drive with 4.5 million files in the Chrome Sunset theme">
+                <p class="screenshot-caption">Every screenshot here is rendered by the app itself from a real 4.5 million file drive scan with every name anonymized in memory before drawing (spaceview.exe --shots --scan). Real sizes and dates, nobody's real files.</p>
                 <div class="screenshot-row">
-                    <img src="/blog/assets/img/blog/spaceview-neon.png" alt="SpaceView neon color theme">
-                    <img src="/blog/assets/img/blog/spaceview-ocean.png" alt="SpaceView ocean color theme">
-                    <img src="/blog/assets/img/blog/spaceview-types.png" alt="SpaceView types view - extension breakdown">
+                    <img src="/spaceview/assets/treemap-age-deep-space.png" alt="SpaceView age map: newest files glow, old junk fades, Deep Space theme with the Neon palette">
+                    <img src="/spaceview/assets/treemap-types-aurora-sky.png" alt="SpaceView by type: every block colored by extension, Aurora Sky theme with the Ocean palette">
+                    <img src="/spaceview/assets/treemap-light-golden-hour.png" alt="SpaceView light mode, Golden Hour theme">
+                </div>
+                <div class="screenshot-row">
+                    <img src="/spaceview/assets/largest-files-vaporwave.png" alt="SpaceView Top Files view: the biggest files on the drive, Vaporwave theme">
+                    <img src="/spaceview/assets/extensions-tide-pool.png" alt="SpaceView Types view: space by extension, Tide Pool theme">
+                    <img src="/spaceview/assets/treemap-matrix-rain.png" alt="SpaceView treemap in the Matrix Rain theme with the Neon palette">
                 </div>
             </div>
         </section>
@@ -270,7 +277,7 @@
             <h2>Download SpaceView</h2>
             <p>Grab the latest release from GitHub. Windows binary, no install needed - just unzip and run.</p>
             <div class="hero-links">
-                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download v0.12.0</a>
+                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download v0.15.2</a>
                 <a href="https://github.com/TrentSterling/spaceview" class="btn btn-secondary" target="_blank">View Source</a>
             </div>
         </section>
