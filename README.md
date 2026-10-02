@@ -24,15 +24,15 @@
 ---
 
 <p align="center">
-  <img src="docs/assets/screenshot-neon.png" alt="SpaceView treemap with Neon theme" width="900" />
+  <img src="docs/assets/hero-chrome-sunset.png" alt="SpaceView native treemap in the Chrome Sunset theme" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/screenshot-ocean.png" alt="SpaceView full drive scan with Ocean theme" width="900" />
+  <img src="docs/assets/treemap-types-aurora-sky.png" alt="SpaceView synthetic fixture colored by file type" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/screenshot-types.png" alt="SpaceView Types view" width="900" />
+  <img src="docs/assets/extensions-tide-pool.png" alt="SpaceView Types view" width="900" />
 </p>
 
 ---
@@ -41,6 +41,7 @@
 
 - **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Vivid SpaceMonger-style colors. Cushion shading for 3D depth.
 - **Live Scan.** See the first discovered file immediately, then previews about every 250 ms while large folders are still scanning. Pause, resume, cancel. Drag-and-drop folders.
+- **Verified Rescans.** Persistent NTFS caches use the Windows change journal to refresh changed folders and reuse validated structure. Current file metadata is checked along the cached paths; missing history, permission changes and corrupt caches trigger full scans. Click Rescan, or right-click it to force a full scan. [Details](docs/SCAN-CACHE.md).
 - **Readable UI.** Protected text surfaces, visible button outlines, larger treemap labels, and stronger dark/light contrast across gradients and interaction states.
 - **5 View Modes.** Map (treemap), List (sortable directory browser), Top Files (1000 largest), Types (extension treemap), Duplicates. Switch instantly via tabs.
 - **Drive Picker.** Visual drive cards with capacity bars on the welcome screen. Click any drive to scan. Toolbar button opens the picker anytime.
@@ -51,7 +52,7 @@
 - **Right-Click Context Menu.** Open in Explorer, Copy Path, Delete to Recycle Bin. Works in all views.
 - **Rich Tooltips.** Hover any block for name, size, percentage, file count, and full path.
 - **Built for large drives.** Folder layouts are cached, the treemap uses a batched mesh, and visible directory expansion has a 250,000-node budget.
-- **Portable.** One ~7 MB .exe. No installer, no runtime dependencies. Download, run, delete to uninstall.
+- **Portable.** One 7.8 MB .exe. No installer, no runtime dependencies. Download, run, delete to uninstall.
 
 ## Quick Start
 
@@ -78,10 +79,11 @@ The binary will be at `target/release/spaceview.exe`.
 ```
 
 Runs Rust regressions, builds the release EXE, captures native UI states at two
-window sizes, checks live scan growth/pause/resume/cancel, and exercises a
+window sizes, checks live scan growth/pause/resume/cancel, compares cached scans
+with fresh scans after filesystem changes, verifies reuse across launches, and exercises a
 500,000-file synthetic scan. Inspect the saved screenshots after the run.
 See [the gauntlet guide](docs/GAUNTLET.md) and
-[v0.15.3 validation](docs/QA-2026-10-01.md).
+[v0.16.0 validation](docs/QA-v0.16.0.md).
 
 ## Navigation
 
@@ -108,6 +110,8 @@ src/
   app.rs           Main UI: rendering, hit testing, input, themes, drive picker, extension panel
   camera.rs        Bounded camera with smooth zoom/pan/snap animations
   scanner.rs       Recursive directory scanner with progress tracking and live snapshots
+  scan_cache.rs    Verified rescan planning, bounded persistence and cache regression fixture
+  journal.rs       Read-only NTFS change journal, file identities and open-writer detection
   contrast.rs      Text, outline, surface and gradient-compositing protection
   gauntlet.rs      Real scan timing probe and native live scan capture support
   world_layout.rs  Lazy LOD layout tree: expand/prune on demand, cached layouts, node budget

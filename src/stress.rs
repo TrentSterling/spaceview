@@ -105,6 +105,8 @@ pub fn generate_synthetic_tree(total_files: usize) -> FileNode {
     let mut rng = Rng::new(0xC0FFEE_u64 ^ total_files as u64);
 
     let mut root = FileNode {
+        file_id: 0,
+        volatile: false,
         name: "SyntheticRoot".to_string(),
         path: PathBuf::from("SYN:\\root"),
         size: 0,
@@ -163,6 +165,8 @@ pub fn generate_synthetic_tree(total_files: usize) -> FileNode {
 fn make_wide_dir(rng: &mut Rng, name: String, n: usize) -> FileNode {
     let path = PathBuf::from(format!("SYN:\\{}", name));
     let mut dir = FileNode {
+        file_id: 0,
+        volatile: false,
         name,
         path: path.clone(),
         size: 0,
@@ -174,6 +178,8 @@ fn make_wide_dir(rng: &mut Rng, name: String, n: usize) -> FileNode {
     for i in 0..n {
         let size = synthetic_file_size(rng);
         dir.children.push(FileNode {
+            file_id: 0,
+            volatile: false,
             name: format!("file_{}.js", i),
             path: path.join(format!("file_{}.js", i)),
             size,
@@ -196,6 +202,8 @@ fn make_deep_chain(rng: &mut Rng, name: String, depth: usize, budget: usize) -> 
         used: &mut usize,
     ) -> FileNode {
         let mut dir = FileNode {
+            file_id: 0,
+            volatile: false,
             name,
             path: path.clone(),
             size: 0,
@@ -212,6 +220,8 @@ fn make_deep_chain(rng: &mut Rng, name: String, depth: usize, budget: usize) -> 
             let size = synthetic_file_size(rng);
             *used += 1;
             dir.children.push(FileNode {
+                file_id: 0,
+                volatile: false,
                 name: format!("f{}.dat", i),
                 path: path.join(format!("f{}.dat", i)),
                 size,
@@ -246,6 +256,8 @@ fn make_branching_tree(rng: &mut Rng, name: String, budget: usize, max_depth: us
         max_depth: usize,
     ) -> FileNode {
         let mut dir = FileNode {
+            file_id: 0,
+            volatile: false,
             name,
             path: path.clone(),
             size: 0,
@@ -263,6 +275,8 @@ fn make_branching_tree(rng: &mut Rng, name: String, budget: usize, max_depth: us
                 let size = synthetic_file_size(rng);
                 *remaining -= 1;
                 dir.children.push(FileNode {
+                    file_id: 0,
+                    volatile: false,
                     name: format!("leaf_{}.bin", i),
                     path: path.join(format!("leaf_{}.bin", i)),
                     size,

@@ -21,9 +21,9 @@ cargo run            # run in debug mode
 **Verification:** `./tools/gauntlet.ps1 -LivePath 'C:/path/to/a/large/folder'`.
 Runs regressions, release build, native UI captures at two sizes, real live scan
 checks and 500,000-file stress. Inspect the PNGs after automated checks pass.
-See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
+See `docs/GAUNTLET.md` and `docs/QA-v0.16.0.md`.
 
-## Architecture (v0.15.4)
+## Architecture (v0.16.0)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -36,6 +36,8 @@ See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
 - `src/stress.rs` - Perf harness: `--synthetic N` in-memory tree generator, `--stress S` scripted camera thrash, per-second CSV metrics (frame ms, layout calls, shapes, node count, RSS)
 - `src/contrast.rs` - Protected text-bearing surfaces, foreground ink, outlines and actual gradient/panel composition, following Trontop's stronger contrast pass
 - `src/gauntlet.rs` - Read-only real scan probe and native live scan screenshot receipts
+- `src/scan_cache.rs` - Integrity-checked, bounded metadata baselines, journal-driven folder refresh, cache probes and native mutation gauntlet
+- `src/journal.rs` - Read-only NTFS journal access, security/volume identity and file-reference/write-sharing metadata
 
 ### Key Design Decisions
 - **Cached normalized layouts (v0.12):** Each directory's squarified child layout is computed ONCE at expansion, normalized to a `1.0 x aspect` box, and stored on the LayoutNode (`child_norm` + `child_norm_aspect`). Render, hit test, and minimap scale the cached rects into the screen content rect every frame; `treemap::layout` never runs in the per-frame path. World rects derive from the same normalized layout, so world-space decisions and rendering always agree. Fixed 16px headers, 3px padding, 1.5px border.
@@ -52,6 +54,7 @@ See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans. Paused scans say Paused, use a static indicator and hide rates until resumed.
+- **Verified rescans (v0.16.0):** Reuse structure after validating volume/root/security identity and complete journal coverage. Freshly enumerate dirty parents, route every hardlink and re-read incomplete branches. Check current file identity, size and last-write time along every cached path with a bounded eight-thread pool; journal reasons alone cannot prove metadata freshness for open handles. Baselines are anchored before reads; catch up concurrent changes or fall back to live full scanning. Disk cache: eight entries / 512 MiB, integrity-checked and atomically replaced. Rescan defaults to validation; its context menu offers Full scan. See `docs/SCAN-CACHE.md`.
 - **Welcome screen:** Shows drive cards with capacity bars (blue/yellow/red by usage), name, type, filesystem. Click a drive to scan. "Open Folder..." button below as fallback. Keyboard shortcuts at the bottom.
 - **About dialog:** Auto-opens on first launch. Escape closes it. "Don't show on startup" checkbox persisted to `%APPDATA%/SpaceView/prefs.txt` (multi-key format). Manual toggle via About button always works.
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.

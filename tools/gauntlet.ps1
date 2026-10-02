@@ -10,13 +10,14 @@ if (-not $Output) { $Output = Join-Path $repo ('test-results/' + (Get-Date -Form
 $Output = [System.IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 $previousPrefs = $env:SPACEVIEW_PREFS_DIR
+$previousCacheDisabled = $env:SPACEVIEW_DISABLE_CACHE
 $env:SPACEVIEW_PREFS_DIR = Join-Path $Output 'prefs'
 
 function Invoke-NativeCheck([string]$Name, [string[]]$Arguments, [int]$TimeoutSeconds = 90) {
     $stdout = Join-Path $Output ($Name + '-stdout.txt')
     $stderr = Join-Path $Output ($Name + '-stderr.txt')
     # These are the app's visible native UI checks. The read-only probe is hidden.
-    $windowStyle = if ($Name -eq 'probe') { 'Hidden' } else { 'Normal' }
+    $windowStyle = if ($Name -in @('probe', 'cache', 'cache-crossprocess')) { 'Hidden' } else { 'Normal' }
     $process = Start-Process -FilePath (Join-Path $repo 'target/release/spaceview.exe') `
         -ArgumentList $Arguments -WorkingDirectory $Output -WindowStyle $windowStyle `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
@@ -63,6 +64,8 @@ try {
         }
     }
 
+    # Cold/live captures exercise the scanner, even if a prior baseline exists.
+    $env:SPACEVIEW_DISABLE_CACHE = '1'
     if ($LivePath) {
         if (-not (Test-Path -LiteralPath $LivePath -PathType Container)) { throw "Missing live scan folder: $LivePath" }
         $probe = Join-Path $Output 'probe'
@@ -75,6 +78,22 @@ try {
         if ($liveReport -notmatch 'COMPLETE native live scan checks passed') { throw 'Live scan checks incomplete' }
         Write-Host $liveReport
     }
+
+    Remove-Item Env:SPACEVIEW_DISABLE_CACHE -ErrorAction SilentlyContinue
+    Invoke-NativeCheck 'cache' @('--cache-gauntlet', ('"' + (Join-Path $Output 'cache') + '"'))
+    $cacheReport = Get-Content -LiteralPath (Join-Path $Output 'cache/cache-report.txt') -Raw
+    if ($cacheReport -notmatch 'COMPLETE verified scan cache checks passed') { throw 'Cache checks incomplete' }
+    Write-Host $cacheReport
+    $fixturePath = (Get-Content -LiteralPath (Join-Path $Output 'cache/fixture-path.txt') -Raw).Trim()
+    $cacheVisual = Join-Path $Output 'cache-ui'
+    Invoke-NativeCheck 'cache-ui' @('--cache-shots', ('"' + $cacheVisual + '"'), '--scan', ('"' + $fixturePath + '"'), '--shot-width', '1024', '--shot-height', '700')
+    if (@(Get-ChildItem -LiteralPath $cacheVisual -Filter '*.png').Count -ne 2) { throw 'Missing cache UI captures' }
+    $cacheUIReport = Get-Content -LiteralPath (Join-Path $cacheVisual 'cache-ui-report.txt') -Raw
+    if ($cacheUIReport -notmatch 'COMPLETE native verified rescan UI checks passed') { throw 'Cache UI checks incomplete' }
+    Write-Host $cacheUIReport
+    $crossProcess = Join-Path $Output 'cache-crossprocess'
+    Invoke-NativeCheck 'cache-crossprocess' @('--cache-probe', ('"' + $fixturePath + '"'), '--report-dir', ('"' + $crossProcess + '"'), '--expect-reuse')
+    Get-Content -LiteralPath (Join-Path $crossProcess 'cache-probe.txt')
 
     Invoke-NativeCheck 'stress' @('--synthetic', '500000', '--stress', '8')
     $metrics = Import-Csv -LiteralPath (Join-Path $Output 'stress_log.csv')
@@ -91,12 +110,13 @@ try {
         sha256 = (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash
         bytes = $binary.Length
         livePath = $LivePath
-        screenshots = 36 + $(if ($LivePath) { 5 } else { 0 })
+        screenshots = 38 + $(if ($LivePath) { 5 } else { 0 })
         visualReview = 'pending human or agent image inspection'
     }
     $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Output 'receipt.json') -Encoding UTF8
     Write-Host "[SpaceViewGauntlet] COMPLETE all automated checks passed; inspect PNGs in $Output"
 } finally {
     $env:SPACEVIEW_PREFS_DIR = $previousPrefs
+    $env:SPACEVIEW_DISABLE_CACHE = $previousCacheDisabled
     Pop-Location
 }

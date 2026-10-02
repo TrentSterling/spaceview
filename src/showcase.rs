@@ -32,11 +32,11 @@ impl Gen {
 }
 
 fn file(name: &str, size: u64, modified: u64) -> FileNode {
-    FileNode { name: name.to_string(), path: PathBuf::new(), size, is_dir: false, file_count: 0, modified, children: Vec::new() }
+    FileNode { name: name.to_string(), path: PathBuf::new(), size, is_dir: false, file_count: 0, modified, children: Vec::new(), file_id: 0, volatile: false }
 }
 
 fn dir(name: &str, children: Vec<FileNode>) -> FileNode {
-    FileNode { name: name.to_string(), path: PathBuf::new(), size: 0, is_dir: true, file_count: 0, modified: 0, children }
+    FileNode { name: name.to_string(), path: PathBuf::new(), size: 0, is_dir: true, file_count: 0, modified: 0, children, file_id: 0, volatile: false }
 }
 
 /// Fill in paths, directory sizes, file counts and newest-child dates.

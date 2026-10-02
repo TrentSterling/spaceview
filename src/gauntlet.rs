@@ -15,6 +15,24 @@ pub const LIVE_FILES: &[&str] = &[
     "05-canceled.png",
 ];
 
+pub struct CacheScript {
+    pub dir: PathBuf,
+    pub stage: usize,
+    pub frames: u32,
+    pub pending: bool,
+    pub entered: Instant,
+    pub button_pos: egui::Pos2,
+    pub click_frames: u8,
+    pub clicked: bool,
+}
+impl CacheScript {
+    pub fn new(dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&dir).expect("create cache capture directory");
+        Self { dir, stage: 0, frames: 0, pending: false, entered: Instant::now(),
+            button_pos: egui::Pos2::ZERO, click_frames: 0, clicked: false }
+    }
+}
+
 pub struct LiveScript {
     pub dir: PathBuf,
     pub stage: usize,

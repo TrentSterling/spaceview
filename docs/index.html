@@ -12,21 +12,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpaceView by Tront: Free Disk Space Visualizer for Windows</title>
-    <meta name="description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
+    <meta name="description" content="SpaceView by Tront is a free Windows disk space visualizer with five views, readable dark and light themes, live scanning and verified NTFS rescans. One portable 7.8 MB EXE, no install.">
     <meta name="author" content="Trent Sterling (Tront)">
     <link rel="canonical" href="https://tront.xyz/spaceview/" />
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://tront.xyz/spaceview/">
     <meta property="og:title" content="SpaceView by Tront: Free Disk Space Visualizer for Windows">
-    <meta property="og:description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
-    <meta property="og:image" content="https://tront.xyz/spaceview/assets/og-image.png?v=2">
-    <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
+    <meta property="og:description" content="SpaceView by Tront is a free Windows disk space visualizer with five views, readable dark and light themes, live scanning and verified NTFS rescans. One portable 7.8 MB EXE, no install.">
+    <meta property="og:image" content="https://tront.xyz/spaceview/assets/hero-chrome-sunset.png?v=0.16.0">
+    <meta property="og:image:width" content="2100">
+    <meta property="og:image:height" content="1290">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="SpaceView by Tront: Free Disk Space Visualizer for Windows">
-    <meta name="twitter:description" content="SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.">
-    <meta name="twitter:image" content="https://tront.xyz/spaceview/assets/og-image.png?v=2">
-    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"SoftwareApplication","name":"SpaceView","alternateName":["SpaceView by Tront","Tront SpaceView","SpaceView disk visualizer"],"description":"SpaceView by Tront (Trent Sterling) is a free, fast disk space visualizer for Windows: a modern SpaceMonger-style treemap in Rust + egui with 5 view modes, duplicate detection, extension filters, live scanning and a full theme engine. One 7 MB exe, no install.","url":"https://tront.xyz/spaceview/","image":"https://tront.xyz/spaceview/assets/og-image.png?v=2","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows","softwareVersion":"0.15.2","downloadUrl":"https://github.com/TrentSterling/spaceview/releases","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Trent Sterling","alternateName":"Tront","url":"https://tront.xyz"},"publisher":{"@type":"Organization","name":"Tront","url":"https://tront.xyz","logo":"https://tront.xyz/assets/img/tront.png"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Tront","item":"https://tront.xyz/"},{"@type":"ListItem","position":2,"name":"SpaceView","item":"https://tront.xyz/spaceview/"}]}]}</script>
+    <meta name="twitter:description" content="SpaceView by Tront is a free Windows disk space visualizer with five views, readable dark and light themes, live scanning and verified NTFS rescans. One portable 7.8 MB EXE, no install.">
+    <meta name="twitter:image" content="https://tront.xyz/spaceview/assets/hero-chrome-sunset.png?v=0.16.0">
+    <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"SoftwareApplication","name":"SpaceView","alternateName":["SpaceView by Tront","Tront SpaceView","SpaceView disk visualizer"],"description":"SpaceView by Tront is a free Windows disk space visualizer with five views, readable dark and light themes, live scanning and verified NTFS rescans. One portable 7.8 MB EXE, no install.","url":"https://tront.xyz/spaceview/","image":"https://tront.xyz/spaceview/assets/hero-chrome-sunset.png?v=0.16.0","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows","softwareVersion":"0.16.0","downloadUrl":"https://github.com/TrentSterling/spaceview/releases/latest/download/spaceview.exe","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Trent Sterling","alternateName":"Tront","url":"https://tront.xyz"},"publisher":{"@type":"Organization","name":"Tront","url":"https://tront.xyz","logo":"https://tront.xyz/assets/img/tront.png"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Tront","item":"https://tront.xyz/"},{"@type":"ListItem","position":2,"name":"SpaceView","item":"https://tront.xyz/spaceview/"}]}]}</script>
     <link rel="icon" href="/favicon.png" type="image/png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -68,23 +68,24 @@
         .hero-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
 
         .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.65rem 1.4rem; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 0.95rem; font-weight: 600; transition: all 0.2s ease; text-decoration: none; }
-        .btn-primary { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
-        .btn-primary:hover { background: rgba(59, 130, 246, 0.25); color: #60a5fa; transform: translateY(-2px); box-shadow: 0 4px 20px rgba(59, 130, 246, 0.2); }
-        .btn-secondary { background: rgba(255,255,255,0.05); color: #c0c0c0; border: 1px solid rgba(255,255,255,0.1); }
+        .btn-primary { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid #60a5fa; }
+        .btn-primary:hover { background: rgba(59, 130, 246, 0.25); color: #bfdbfe; transform: translateY(-2px); box-shadow: 0 4px 20px rgba(59, 130, 246, 0.2); }
+        .btn-secondary { background: rgba(255,255,255,0.05); color: #e0e0e0; border: 1px solid #777; }
         .btn-secondary:hover { background: rgba(255,255,255,0.1); color: #ffffff; transform: translateY(-2px); }
+        .btn:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 4px; }
 
         .version-badge { font-family: 'Fira Code', monospace; font-size: 0.75rem; background: rgba(59, 130, 246, 0.15); color: #60a5fa; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 500; vertical-align: middle; margin-left: 0.3rem; }
 
         .section-header { margin-bottom: 1.5rem; }
         .section-header h2 { font-size: 1.8rem; margin-bottom: 0.4rem; }
-        .section-header p { color: #888; font-size: 1rem; max-width: 40rem; }
+        .section-header p { color: #b0b0b0; font-size: 1rem; max-width: 40rem; }
 
         .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
         .feature-card { background: #1e1e1e; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1.4rem; transition: border-color 0.2s, transform 0.2s; }
         .feature-card:hover { border-color: rgba(255,255,255,0.12); transform: translateY(-2px); }
         .feature-icon { font-family: 'Fira Code', monospace; font-size: 1.5rem; font-weight: 700; margin-bottom: 0.6rem; display: block; }
         .feature-card h3 { font-size: 1rem; margin-bottom: 0.4rem; color: #e0e0e0; }
-        .feature-card p { font-size: 0.85rem; color: #888; line-height: 1.5; }
+        .feature-card p { font-size: 0.85rem; color: #b0b0b0; line-height: 1.5; }
         .feature-card p code { font-family: 'Fira Code', monospace; font-size: 0.8rem; background: rgba(255,255,255,0.06); padding: 0.1rem 0.35rem; border-radius: 3px; }
 
         .accent-blue { color: #3b82f6; }
@@ -97,7 +98,7 @@
         .how-card:first-child { border-color: rgba(59, 130, 246, 0.2); }
         .how-card:last-child { border-color: rgba(56, 189, 248, 0.2); }
         .how-card h3 { font-size: 1.1rem; margin-bottom: 0.6rem; }
-        .how-card:first-child h3 { color: #3b82f6; }
+        .how-card:first-child h3 { color: #93c5fd; }
         .how-card:last-child h3 { color: #38bdf8; }
         .how-card p { color: #b0b0b0; font-size: 0.95rem; line-height: 1.6; }
         .how-card code { font-family: 'Fira Code', monospace; font-size: 0.85rem; background: rgba(255,255,255,0.06); padding: 0.15rem 0.4rem; border-radius: 4px; }
@@ -106,7 +107,7 @@
         .stat-card { background: #1e1e1e; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1.2rem; text-align: center; }
         .stat-card .stat-value { font-family: 'Fira Code', monospace; font-size: 1.4rem; font-weight: 700; display: block; margin-bottom: 0.4rem; }
         .stat-card h3 { font-size: 0.95rem; margin-bottom: 0.3rem; }
-        .stat-card p { font-size: 0.8rem; color: #888; line-height: 1.4; }
+        .stat-card p { font-size: 0.8rem; color: #b0b0b0; line-height: 1.4; }
         .stat-card:nth-child(1) .stat-value { color: #3b82f6; }
         .stat-card:nth-child(2) .stat-value { color: #38bdf8; }
         .stat-card:nth-child(3) .stat-value { color: #818cf8; }
@@ -114,7 +115,7 @@
 
         .download-section { text-align: center; padding: 3rem 0; }
         .download-section h2 { font-size: 1.8rem; margin-bottom: 0.6rem; }
-        .download-section p { color: #888; font-size: 1rem; margin-bottom: 1.5rem; max-width: 32rem; margin-left: auto; margin-right: auto; }
+        .download-section p { color: #b0b0b0; font-size: 1rem; margin-bottom: 1.5rem; max-width: 32rem; margin-left: auto; margin-right: auto; }
 
         .page-footer { padding: 2rem 0; border-top: 1px solid rgba(255,255,255,0.06); text-align: center; color: #666; font-size: 0.85rem; }
         .page-footer a { color: #888; margin: 0 0.6rem; transition: color 0.2s; }
@@ -126,7 +127,7 @@
         .screenshot-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
         .screenshot-row img { width: 100%; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); transition: transform 0.2s, box-shadow 0.2s; cursor: pointer; }
         .screenshot-row img:hover { transform: translateY(-3px); box-shadow: 0 8px 30px rgba(59, 130, 246, 0.2); }
-        .screenshot-caption { text-align: center; color: #666; font-size: 0.8rem; margin-top: -0.5rem; }
+        .screenshot-caption { text-align: center; color: #b0b0b0; font-size: 0.85rem; margin-top: -0.5rem; }
 
         @media (max-width: 900px) {
             .features-grid { grid-template-columns: repeat(2, 1fr); }
@@ -139,6 +140,9 @@
             section { padding: 2rem 0; }
         }
         @media (max-width: 560px) {
+            #magic-navbar-container { gap: 0.5rem; padding: 0 0.5rem; }
+            .nav-link { padding: 0 0.7rem; }
+            .nav-link[href="/games/"], .nav-link[href="/blog/"] { display: none; }
             .features-grid { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: 1fr; }
             .hero h1 { font-size: 2rem; }
@@ -164,7 +168,7 @@
             <h1>SpaceView</h1>
             <p class="subtitle">See where your disk space went. SpaceView by Tront (Trent Sterling) is a modern SpaceMonger clone built in Rust + egui: fast, tiny, themeable, and actually useful.</p>
             <div class="hero-links">
-                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download <span class="version-badge">v0.15.2</span></a>
+                <a href="https://github.com/TrentSterling/spaceview/releases/latest/download/spaceview.exe" class="btn btn-primary">Download <span class="version-badge">v0.16.0</span></a>
                 <a href="https://github.com/TrentSterling/spaceview" class="btn btn-secondary" target="_blank">GitHub</a>
                 <a href="/blog/posts/spaceview/" class="btn btn-secondary" target="_blank">Blog Post</a>
             </div>
@@ -175,17 +179,17 @@
                 <h2>Screenshots</h2>
             </div>
             <div class="screenshot-gallery">
-                <img class="screenshot-hero" src="/spaceview/assets/hero-chrome-sunset.png" alt="SpaceView by Tront: treemap of a 1.8 TB drive with 4.5 million files in the Chrome Sunset theme">
-                <p class="screenshot-caption">Every screenshot here is rendered by the app itself from a real 4.5 million file drive scan with every name anonymized in memory before drawing (spaceview.exe --shots --scan). Real sizes and dates, nobody's real files.</p>
+                <img class="screenshot-hero" src="/spaceview/assets/hero-chrome-sunset.png?v=0.16.0" alt="SpaceView v0.16.0 native treemap in the Chrome Sunset theme, with outlined controls and readable labels">
+                <p class="screenshot-caption">Captured from the native SpaceView v0.16.0 app using a synthetic filesystem fixture. These show the actual interface, with no personal filenames.</p>
                 <div class="screenshot-row">
-                    <img src="/spaceview/assets/treemap-age-deep-space.png" alt="SpaceView age map: newest files glow, old junk fades, Deep Space theme with the Neon palette">
-                    <img src="/spaceview/assets/treemap-types-aurora-sky.png" alt="SpaceView by type: every block colored by extension, Aurora Sky theme with the Ocean palette">
-                    <img src="/spaceview/assets/treemap-light-golden-hour.png" alt="SpaceView light mode, Golden Hour theme">
+                    <img src="/spaceview/assets/treemap-age-deep-space.png?v=0.16.0" alt="SpaceView age map: newest files glow, old junk fades, Deep Space theme with the Neon palette">
+                    <img src="/spaceview/assets/treemap-types-aurora-sky.png?v=0.16.0" alt="SpaceView by type: every block colored by extension, Aurora Sky theme with the Ocean palette">
+                    <img src="/spaceview/assets/treemap-light-golden-hour.png?v=0.16.0" alt="SpaceView light mode, Golden Hour theme">
                 </div>
                 <div class="screenshot-row">
-                    <img src="/spaceview/assets/largest-files-vaporwave.png" alt="SpaceView Top Files view: the biggest files on the drive, Vaporwave theme">
-                    <img src="/spaceview/assets/extensions-tide-pool.png" alt="SpaceView Types view: space by extension, Tide Pool theme">
-                    <img src="/spaceview/assets/treemap-matrix-rain.png" alt="SpaceView treemap in the Matrix Rain theme with the Neon palette">
+                    <img src="/spaceview/assets/largest-files-vaporwave.png?v=0.16.0" alt="SpaceView Top Files view: the biggest files on the drive, Vaporwave theme">
+                    <img src="/spaceview/assets/extensions-tide-pool.png?v=0.16.0" alt="SpaceView Types view: space by extension, Tide Pool theme">
+                    <img src="/spaceview/assets/treemap-matrix-rain.png?v=0.16.0" alt="SpaceView treemap in the Matrix Rain theme with the Neon palette">
                 </div>
             </div>
         </section>
@@ -202,9 +206,9 @@
                     <p>Squarified treemap algorithm packs folders and files into nested rectangles proportional to their size. Big files jump out immediately.</p>
                 </div>
                 <div class="feature-card">
-                    <span class="feature-icon accent-cyan">LOD</span>
-                    <h3>Lazy LOD</h3>
-                    <p>Only expands nodes that are large enough on screen, prunes detail you can't see, caps memory with a global node budget. Layouts compute once and cache. Stays smooth even on multi-terabyte drives.</p>
+                    <span class="feature-icon accent-cyan">RE</span>
+                    <h3>Verified Rescans</h3>
+                    <p>Repeat NTFS scans reuse a saved folder plan and check current file metadata. Changed folders get fresh reads. Incomplete change history triggers a full scan.</p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon accent-indigo">5000x</span>
@@ -213,18 +217,18 @@
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon accent-sky">%%</span>
-                    <h3>Background Scanning</h3>
-                    <p>Scanning runs on a background thread with atomic progress counters. UI stays responsive while the filesystem is being walked.</p>
+                    <h3>Live Scanning</h3>
+                    <p>The treemap fills as files arrive, with live progress and working Pause, Resume and Cancel controls. Explore folders while the scan continues.</p>
                 </div>
                 <div class="feature-card">
                     <span class="feature-icon accent-blue">/></span>
-                    <h3>Breadcrumbs</h3>
-                    <p>Clickable breadcrumb trail shows exactly where you are in the directory tree. Jump back to any parent with one click.</p>
+                    <h3>Readable Controls</h3>
+                    <p>Stronger text contrast, outlined buttons and clear focus states across dark and light themes. Tile labels fit the space available.</p>
                 </div>
                 <div class="feature-card">
-                    <span class="feature-icon accent-cyan">7</span>
-                    <h3>Tiny Binary</h3>
-                    <p>The whole thing compiles down to a 7 MB binary. About 5,000 lines of Rust. No installer, no runtime, just run it.</p>
+                    <span class="feature-icon accent-cyan">EXE</span>
+                    <h3>Portable Windows App</h3>
+                    <p>One 7.8 MB executable. No installer or separate runtime. Download it and run it.</p>
                 </div>
             </div>
         </section>
@@ -239,9 +243,13 @@
                     <p>The classic treemap algorithm splits a rectangle into sub-rectangles proportional to file sizes. The "squarified" variant optimizes the aspect ratios so you get fat squares instead of thin slivers - much easier to read and click. Each depth level nests inside its parent, so the spatial hierarchy matches your actual folder structure.</p>
                 </div>
                 <div class="how-card">
-                    <h3>Lazy Level of Detail</h3>
-                    <p>Instead of rendering every file on every frame, SpaceView only expands tree nodes when they're large enough on screen to matter. When you zoom in, deeper nodes expand. When you zoom out, they prune back. Each folder's layout is computed once and cached, and the whole treemap draws as a single batched mesh - the render budget stays constant regardless of how many files are on disk.</p>
+                    <h3>Fresh Results on Rescan</h3>
+                    <p>After a complete NTFS scan, SpaceView saves a compact traversal plan. On the next scan, it checks the Windows change journal and reads current file identities, sizes and timestamps before publishing the result. If the cache cannot be verified, it scans normally. Right-click Rescan to choose a Full scan at any time.</p>
                 </div>
+            </div>
+            <div class="screenshot-gallery" style="margin-top: 1.5rem;">
+                <img class="screenshot-hero" src="/spaceview/assets/verified-rescan.png?v=0.16.0" alt="SpaceView verified rescan of a 2,003-file test fixture, showing zero folders read and 2,003 files reused">
+                <p class="screenshot-caption">Native Rescan test: the folder structure was reused and all 2,003 files received current metadata checks. Scan times depend on your disk and folder structure.</p>
             </div>
         </section>
 
@@ -251,22 +259,22 @@
             </div>
             <div class="stats-grid">
                 <div class="stat-card">
-                    <span class="stat-value">Rust</span>
-                    <h3>Language</h3>
-                    <p>Fast, safe, no garbage collector. Perfect for filesystem-heavy work.</p>
+                    <span class="stat-value">5</span>
+                    <h3>Views</h3>
+                    <p>Treemap, file list, largest files, extension totals and duplicates.</p>
                 </div>
                 <div class="stat-card">
-                    <span class="stat-value">egui</span>
-                    <h3>UI Framework</h3>
-                    <p>Immediate mode GUI. Redraws every frame, no retained widget state to manage.</p>
+                    <span class="stat-value">51</span>
+                    <h3>Regression Tests</h3>
+                    <p>Passing Rust checks for scanning, layout and cache validation.</p>
                 </div>
                 <div class="stat-card">
-                    <span class="stat-value">~5K</span>
-                    <h3>Lines of Code</h3>
-                    <p>Entire app in about 5,000 lines across 7 source files.</p>
+                    <span class="stat-value">22</span>
+                    <h3>Cache Scenarios</h3>
+                    <p>Native filesystem cases checked against fresh scans.</p>
                 </div>
                 <div class="stat-card">
-                    <span class="stat-value">7 MB</span>
+                    <span class="stat-value">7.8 MB</span>
                     <h3>Binary Size</h3>
                     <p>No installer, no runtime dependencies. Just a single executable.</p>
                 </div>
@@ -275,10 +283,11 @@
 
         <section id="download" class="download-section">
             <h2>Download SpaceView</h2>
-            <p>Grab the latest release from GitHub. Windows binary, no install needed - just unzip and run.</p>
+            <p>Download the Windows executable and run it. No installation needed. Release notes and the SHA-256 checksum are available on GitHub.</p>
             <div class="hero-links">
-                <a href="https://github.com/TrentSterling/spaceview/releases" class="btn btn-primary">Download v0.15.2</a>
+                <a href="https://github.com/TrentSterling/spaceview/releases/latest/download/spaceview.exe" class="btn btn-primary">Download v0.16.0</a>
                 <a href="https://github.com/TrentSterling/spaceview" class="btn btn-secondary" target="_blank">View Source</a>
+                <a href="https://github.com/TrentSterling/spaceview/releases/tag/v0.16.0" class="btn btn-secondary">Release Notes</a>
             </div>
         </section>
 
@@ -290,7 +299,7 @@
                 <span class="footer-sep">|</span>
                 <a href="https://github.com/TrentSterling/spaceview" target="_blank">GitHub</a>
                 <span class="footer-sep">|</span>
-                <a href="https://github.com/TrentSterling/spaceview/releases" target="_blank">Download</a>
+                <a href="https://github.com/TrentSterling/spaceview/releases/latest/download/spaceview.exe" target="_blank">Download</a>
                 <span class="footer-sep">|</span>
                 <a href="https://tront.xyz/discord/" target="_blank">Discord</a>
             </p>

@@ -1,3 +1,15 @@
+## v0.16.0 - verified repeat-scan cache
+
+- Persist bounded NTFS metadata baselines and validate change-journal continuity
+  before reusing unchanged branches. Freshly read affected folders and route
+  changes through all cached hardlinks. Check current identity, size and timestamp
+  metadata along cached paths in a bounded worker pool, including open writers.
+- Fall back to full scans for gaps, resets, changed identities/permissions,
+  inaccessible journals and invalid cache data. Never publish an unverified tree.
+- Add Rescan with a Full scan context action, scan-phase text and completion
+  summaries. Extend the gauntlet with real cache comparisons, corruption and
+  cancellation checks, native Rescan captures and cross-process reuse.
+
 ## v0.15.4 - fitted labels + paused scan status
 
 - Measure text widths for treemap and file-type labels, use ellipses for names,

@@ -1,6 +1,6 @@
 ﻿[package]
 name = "spaceview"
-version = "0.15.4"
+version = "0.16.0"
 edition = "2021"
 
 [dependencies]
@@ -10,6 +10,13 @@ jwalk = "0.8"
 rfd = "0.15"
 sysinfo = "0.33"
 ureq = "2"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+sha2 = "0.10"
+rayon = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Security", "Win32_System_Threading", "Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_System_LibraryLoader"] }
 
 [build-dependencies]
 winresource = "0.1"

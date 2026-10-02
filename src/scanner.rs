@@ -4,15 +4,18 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FileNode {
     pub name: String,
+    #[serde(skip)]
     pub path: PathBuf,
     pub size: u64,
     pub is_dir: bool,
     pub file_count: u64,
     pub modified: u64,
     pub children: Vec<FileNode>,
+    pub file_id: u64,
+    pub volatile: bool,
 }
 
 /// Get free space for the drive containing `path`.
@@ -37,6 +40,11 @@ pub struct ScanProgress {
     pub cancel: AtomicBool,
     pub paused: AtomicBool,
     pub scan_start: Instant,
+    pub directories_read: AtomicU64,
+    pub metadata_read: AtomicU64,
+    pub files_reused: AtomicU64,
+    pub phase: AtomicU64,
+    pub cache_summary: std::sync::Mutex<String>,
 }
 
 impl ScanProgress {
@@ -47,10 +55,15 @@ impl ScanProgress {
             cancel: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             scan_start: Instant::now(),
+            directories_read: AtomicU64::new(0),
+            metadata_read: AtomicU64::new(0),
+            files_reused: AtomicU64::new(0),
+            phase: AtomicU64::new(0),
+            cache_summary: std::sync::Mutex::new(String::new()),
         }
     }
 
-    fn keep_scanning(&self) -> bool {
+    pub(crate) fn keep_scanning(&self) -> bool {
         while self.paused.load(Ordering::Relaxed) {
             if self.cancel.load(Ordering::Relaxed) {
                 return false;
@@ -65,22 +78,30 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
 pub const PREVIEW_NODE_BUDGET: usize = 16_384;
 const PREVIEW_CHILD_CAP: usize = 512;
 
-fn directory_node(path: &Path) -> FileNode {
+pub(crate) fn directory_node(path: &Path) -> FileNode {
     FileNode {
         name: path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+            .unwrap_or_else(|| {
+                let display = path.to_string_lossy();
+                display
+                    .strip_prefix("\\\\?\\")
+                    .unwrap_or(&display)
+                    .to_string()
+            }),
         path: path.to_path_buf(),
         size: 0,
         is_dir: true,
         file_count: 0,
         modified: 0,
         children: Vec::new(),
+        file_id: 0,
+        volatile: true,
     }
 }
 
-fn append_child(parent: &mut FileNode, child: FileNode) {
+pub(crate) fn append_child(parent: &mut FileNode, child: FileNode) {
     parent.size += child.size;
     parent.file_count += if child.is_dir { child.file_count } else { 1 };
     parent.modified = parent.modified.max(child.modified);
@@ -89,7 +110,7 @@ fn append_child(parent: &mut FileNode, child: FileNode) {
 
 /// Copy bounded detail without walking/sorting millions of discovered files.
 /// Full totals survive; WorldLayout aggregates omitted bytes without file actions.
-fn preview_node(node: &FileNode, budget: usize) -> FileNode {
+pub(crate) fn preview_node(node: &FileNode, budget: usize) -> FileNode {
     let mut preview = node.clone_shallow();
     let count = node
         .children
@@ -119,6 +140,8 @@ impl FileNode {
             file_count: self.file_count,
             modified: self.modified,
             children: Vec::new(),
+            file_id: self.file_id,
+            volatile: self.volatile,
         }
     }
 }
@@ -130,6 +153,7 @@ struct Scanner {
     stack: Vec<FileNode>,
     last_snapshot: Option<Instant>,
     interval: Duration,
+    identify: bool,
 }
 
 impl Scanner {
@@ -140,6 +164,7 @@ impl Scanner {
             stack: Vec::new(),
             last_snapshot: None,
             interval: SNAPSHOT_INTERVAL,
+            identify: false,
         }
     }
 
@@ -176,13 +201,31 @@ impl Scanner {
         if !self.progress.keep_scanning() {
             return None;
         }
-        self.stack.push(directory_node(root));
+        let mut node = directory_node(root);
+        if self.identify {
+            if let Ok(stamp) = crate::journal::stamp(root) {
+                if stamp.reparse || !stamp.is_dir {
+                    return Some(node);
+                }
+                node.file_id = stamp.id;
+                node.volatile = stamp.volatile;
+            }
+        }
+        self.stack.push(node);
+        self.progress
+            .directories_read
+            .fetch_add(1, Ordering::Relaxed);
         if let Ok(entries) = std::fs::read_dir(root) {
-            for entry in entries.flatten() {
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    self.stack.last_mut().unwrap().volatile = true;
+                    continue;
+                };
                 if !self.progress.keep_scanning() {
                     return None;
                 }
                 let Ok(kind) = entry.file_type() else {
+                    self.stack.last_mut().unwrap().volatile = true;
                     continue;
                 };
                 // Avoid symlink/junction cycles and escaping the selected drive.
@@ -201,16 +244,29 @@ impl Scanner {
                     let child = self.directory(&path)?;
                     append_child(self.stack.last_mut().unwrap(), child);
                 } else if kind.is_file() {
+                    let stamp = if self.identify {
+                        crate::journal::stamp(&path).ok()
+                    } else {
+                        None
+                    };
+                    if stamp.as_ref().is_some_and(|s| s.reparse || s.is_dir) {
+                        self.stack.last_mut().unwrap().volatile = true;
+                        continue;
+                    }
                     let Ok(metadata) = entry.metadata() else {
+                        self.stack.last_mut().unwrap().volatile = true;
                         continue;
                     };
-                    let size = metadata.len();
-                    let modified = metadata
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                    self.progress.metadata_read.fetch_add(1, Ordering::Relaxed);
+                    let size = stamp.as_ref().map_or(metadata.len(), |s| s.size);
+                    let modified = stamp.as_ref().map(|s| s.modified).unwrap_or_else(|| {
+                        metadata
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    });
                     self.progress.files_scanned.fetch_add(1, Ordering::Relaxed);
                     self.progress
                         .bytes_scanned
@@ -225,16 +281,31 @@ impl Scanner {
                             file_count: 0,
                             modified,
                             children: Vec::new(),
+                            file_id: stamp.as_ref().map_or(0, |s| s.id),
+                            volatile: stamp.as_ref().is_none_or(|s| s.volatile),
                         },
                     );
                 }
                 self.publish();
             }
+        } else {
+            self.stack.last_mut().unwrap().volatile = true;
         }
         let mut node = self.stack.pop().unwrap();
         node.children.sort_by(|a, b| b.size.cmp(&a.size));
         Some(node)
     }
+}
+
+pub(crate) fn scan_full(
+    root: &Path,
+    progress: Arc<ScanProgress>,
+    snapshots: Option<SyncSender<FileNode>>,
+    identify: bool,
+) -> Option<FileNode> {
+    let mut scanner = Scanner::new(progress, snapshots);
+    scanner.identify = identify;
+    scanner.directory(root)
 }
 
 /// First discovered file immediately, then at most four updates/second,

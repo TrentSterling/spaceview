@@ -396,6 +396,8 @@ mod tests {
 
     fn file(name: &str, size: u64) -> FileNode {
         FileNode {
+            file_id: 0,
+            volatile: false,
             name: name.to_string(),
             path: PathBuf::new(),
             size,
@@ -414,6 +416,8 @@ mod tests {
             .map(|c| if c.is_dir { c.file_count } else { 1 })
             .sum();
         FileNode {
+            file_id: 0,
+            volatile: false,
             name: name.to_string(),
             path: PathBuf::new(),
             size,

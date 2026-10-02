@@ -6,6 +6,8 @@ mod color;
 mod contrast;
 mod gauntlet;
 mod scanner;
+mod scan_cache;
+mod journal;
 mod anonymize;
 mod shots;
 mod showcase;
@@ -47,6 +49,17 @@ fn main() -> eframe::Result<()> {
     // Permanent perf harness: --synthetic N (in-memory fake tree, no scan)
     // and --stress S (scripted camera thrash for S seconds, CSV metrics, exit).
     let args: Vec<String> = std::env::args().collect();
+    if let Some(dir) = shots::parse_flag_path(&args, "--cache-gauntlet") {
+        scan_cache::gauntlet(&dir);
+        return Ok(());
+    }
+    if let Some(path) = shots::parse_flag_path(&args, "--cache-probe") {
+        let dir = shots::parse_flag_path(&args, "--report-dir")
+            .unwrap_or_else(|| std::path::PathBuf::from("target/gauntlet/cache-probe"));
+        scan_cache::probe(&path, &dir, args.iter().any(|arg| arg == "--force-full"),
+            args.iter().any(|arg| arg == "--expect-reuse"));
+        return Ok(());
+    }
     if let Some(path) = shots::parse_flag_path(&args, "--scan-probe") {
         let dir = shots::parse_flag_path(&args, "--report-dir")
             .unwrap_or_else(|| std::path::PathBuf::from("target/gauntlet/probe"));
@@ -61,6 +74,7 @@ fn main() -> eframe::Result<()> {
     // --scan PATH with --shots: real scan, anonymized in memory before drawing (anonymize.rs).
     let shots_scan = shots::parse_flag_path(&args, "--scan");
     let live_shots_dir = shots::parse_flag_path(&args, "--live-shots");
+    let cache_shots_dir = shots::parse_flag_path(&args, "--cache-shots");
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
         .expect("Failed to load icon");
@@ -75,7 +89,7 @@ fn main() -> eframe::Result<()> {
         .with_decorations(false);
 
     // Restore saved window size, or default to 1024x700
-    if shots_dir.is_some() || live_shots_dir.is_some() {
+    if shots_dir.is_some() || live_shots_dir.is_some() || cache_shots_dir.is_some() {
         // Fixed frame for the landing page shots, regardless of saved prefs.
         let width = stress::parse_flag_f32(&args, "--shot-width").unwrap_or(1400.0);
         let height = stress::parse_flag_f32(&args, "--shot-height").unwrap_or(860.0);
@@ -87,7 +101,7 @@ fn main() -> eframe::Result<()> {
     }
 
     // Restore saved window position (monitor placement)
-    if shots_dir.is_none() && live_shots_dir.is_none() {
+    if shots_dir.is_none() && live_shots_dir.is_none() && cache_shots_dir.is_none() {
         if let (Some(x), Some(y)) = (prefs.window_x, prefs.window_y) {
             vp = vp.with_position([x, y]);
         }
@@ -108,6 +122,8 @@ fn main() -> eframe::Result<()> {
                 app.configure_shots(dir, shots_scan.clone());
             } else if let Some(dir) = live_shots_dir.clone() {
                 app.configure_live_shots(dir, shots_scan.clone().expect("--live-shots needs --scan PATH"));
+            } else if let Some(dir) = cache_shots_dir.clone() {
+                app.configure_cache_shots(dir, shots_scan.clone().expect("--cache-shots needs --scan PATH"));
             } else if let Some(path) = shots_scan.clone() {
                 app.open_scan(path);
             }

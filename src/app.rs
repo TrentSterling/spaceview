@@ -1,6 +1,6 @@
 use crate::camera::Camera;
 use crate::color;
-use crate::scanner::{FileNode, ScanProgress, get_free_space, scan_directory_live};
+use crate::scanner::{FileNode, ScanProgress, get_free_space};
 use crate::theme;
 use crate::treemap;
 use crate::window_chrome;
@@ -325,6 +325,7 @@ pub struct SpaceViewApp {
     // Scripted screenshots (only active with --shots DIR)
     shots: Option<crate::shots::ShotScript>,
     live_shots: Option<crate::gauntlet::LiveScript>,
+    cache_shots: Option<crate::gauntlet::CacheScript>,
     shots_anonymize_pending: bool,
 }
 
@@ -532,6 +533,7 @@ impl SpaceViewApp {
             stress: None,
             shots: None,
             live_shots: None,
+            cache_shots: None,
             shots_anonymize_pending: false,
             metrics: None,
         }
@@ -601,6 +603,48 @@ impl SpaceViewApp {
         self.open_scan(path);
         self.show_free_space = false;
         self.live_shots = Some(crate::gauntlet::LiveScript::new(dir));
+    }
+
+    pub fn configure_cache_shots(&mut self, dir: PathBuf, path: PathBuf) {
+        self.show_about = false;
+        self.show_free_space = false;
+        self.start_scan_with_mode(path, true);
+        self.cache_shots = Some(crate::gauntlet::CacheScript::new(dir));
+    }
+
+    fn drive_cache_shots(&mut self, ctx: &egui::Context) {
+        let Some(mut script) = self.cache_shots.take() else { return };
+        assert!(script.entered.elapsed().as_secs() < 30, "cache UI stage timed out");
+        if let Some(image) = ctx.input(|i| i.events.iter().find_map(|event| match event {
+            egui::Event::Screenshot { image, .. } => Some(image.clone()), _ => None,
+        })) {
+            let file = if script.stage == 0 { "01-cold-scan.png" } else { "02-verified-rescan.png" };
+            crate::shots::save_png(&script.dir.join(file), &image).expect("save cache UI capture");
+            script.stage += 1; script.frames = 0; script.pending = false;
+            script.entered = std::time::Instant::now();
+            if script.stage == 2 {
+                assert!(script.clicked, "Rescan button was not clicked");
+                let progress = self.scan_progress.as_ref().unwrap();
+                assert!(progress.files_reused.load(Ordering::Relaxed) > 1000);
+                let report = format!("PASS native Rescan button clicked\nPASS {}\nCOMPLETE native verified rescan UI checks passed\n",
+                    progress.cache_summary.lock().unwrap());
+                std::fs::write(script.dir.join("cache-ui-report.txt"), &report).unwrap();
+                eprintln!("{report}"); std::process::exit(0);
+            }
+        }
+        if self.scanning { script.frames = 0; }
+        else if script.stage == 0 || script.clicked {
+            script.frames += 1;
+            if script.frames >= 30 && !script.pending {
+                let progress = self.scan_progress.as_ref().unwrap();
+                let summary = progress.cache_summary.lock().unwrap();
+                assert!(summary.starts_with(if script.stage == 0 { "Full scan" } else { "Verified refresh" }), "unexpected cache UI state: {summary}");
+                script.pending = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            }
+        }
+        self.cache_shots = Some(script);
+        ctx.request_repaint();
     }
 
     fn drive_live_shots(&mut self, ctx: &egui::Context) {
@@ -828,6 +872,10 @@ impl SpaceViewApp {
     }
 
     fn start_scan(&mut self, path: PathBuf) {
+        self.start_scan_with_mode(path, false);
+    }
+
+    fn start_scan_with_mode(&mut self, path: PathBuf, force_full: bool) {
         if let Some(ref prog) = self.scan_progress {
             prog.cancel.store(true, Ordering::Relaxed);
         }
@@ -870,7 +918,7 @@ impl SpaceViewApp {
         self.snapshot_receiver = Some(snapshot_rx);
 
         std::thread::spawn(move || {
-            let result = scan_directory_live(&path, progress, snapshot_tx);
+            let result = crate::scan_cache::scan_with_options(&path, progress, Some(snapshot_tx), force_full);
             let (largest, extensions, time_range) = if let Some(ref root) = result {
                 let (l, e, tr) = derive_scan_stats(root);
                 (Some(l), Some(e), tr)
@@ -894,6 +942,8 @@ impl SpaceViewApp {
                             }
                             root.children.retain(|c| c.name != "<Free Space>");
                             root.children.push(FileNode {
+                                file_id: 0,
+                                volatile: false,
                                 name: "<Free Space>".to_string(),
                                 path: PathBuf::new(),
                                 size: free,
@@ -1011,6 +1061,16 @@ fn load_image_from_png(ctx: &egui::Context, name: &str, png_data: &[u8]) -> egui
 
 impl eframe::App for SpaceViewApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        if let Some(script) = self.cache_shots.as_mut() {
+            input.focused = true;
+            if script.stage == 1 && script.click_frames < 2 {
+                input.events.push(egui::Event::PointerMoved(script.button_pos));
+                input.events.push(egui::Event::PointerButton { pos: script.button_pos,
+                    button: egui::PointerButton::Primary, pressed: script.click_frames == 0,
+                    modifiers: egui::Modifiers::NONE });
+                script.click_frames += 1;
+            } else { input.events.push(egui::Event::PointerMoved(egui::pos2(8.0, 6.0))); }
+        }
         if let Some(script) = self.shots.as_ref() {
             input.focused = true;
             let state = crate::shots::SHOTS.get(script.idx).map(|s| s.state);
@@ -1163,6 +1223,7 @@ impl eframe::App for SpaceViewApp {
         if self.live_shots.is_some() {
             self.drive_live_shots(ctx);
         }
+        if self.cache_shots.is_some() { self.drive_cache_shots(ctx); }
 
         // Check for duplicate detection result
         if let Some(ref rx) = self.dup_receiver {
@@ -2044,13 +2105,15 @@ impl eframe::App for SpaceViewApp {
                         } else {
                             0.0
                         };
+                        let phase = prog.phase.load(Ordering::Relaxed);
                         let mut text = format!(
                             "{} {} files, {}",
-                            if paused { "Paused:" } else { "Scanning..." },
+                            if paused { "Paused:" } else if phase == 1 { "Checking changes..." }
+                                else if phase == 2 { "Refreshing..." } else { "Scanning..." },
                             format_count(files),
                             format_size(bytes),
                         );
-                        if elapsed >= 1.0 && !paused {
+                        if elapsed >= 1.0 && !paused && phase == 0 {
                             text += &format!(
                                 " - {} ({}/sec)",
                                 format_duration(elapsed),
@@ -2077,6 +2140,20 @@ impl eframe::App for SpaceViewApp {
             if self.scan_root.is_some() && !self.scanning {
                 ui.horizontal_wrapped(|ui| {
                     ui.separator();
+                    if self.scan_path.is_some() {
+                        let rescan = ui.button("Rescan").on_hover_text("Verify the previous scan and refresh changed folders. Right-click for a full scan.");
+                        if let Some(script) = self.cache_shots.as_mut() {
+                            script.button_pos = rescan.rect.center();
+                            if rescan.clicked() { script.clicked = true; }
+                        }
+                        let mut full = false;
+                        rescan.context_menu(|ui| {
+                            if ui.button("Full scan").clicked() { full = true; ui.close_menu(); }
+                        });
+                        if rescan.clicked() || full {
+                            self.start_scan_with_mode(self.scan_path.clone().unwrap(), full);
+                        }
+                    }
                     ui.selectable_value(&mut self.view_mode, ViewMode::Treemap, "Map");
                     ui.selectable_value(&mut self.view_mode, ViewMode::List, "List");
                     ui.selectable_value(&mut self.view_mode, ViewMode::LargestFiles, "Top Files");
@@ -2214,6 +2291,13 @@ impl eframe::App for SpaceViewApp {
                         format_size(self.root_size),
                         format_count(self.root_file_count),
                     ));
+
+                    if !self.scanning && self.hovered_node_info.is_none() {
+                        if let Some(ref progress) = self.scan_progress {
+                            let summary = progress.cache_summary.lock().unwrap();
+                            if !summary.is_empty() { ui.separator(); ui.label(summary.as_str()); }
+                        }
+                    }
 
                     if let Some(ref info) = self.hovered_node_info {
                         ui.separator();
@@ -2471,14 +2555,16 @@ impl eframe::App for SpaceViewApp {
                     ui.add_space(ui.available_height() / 3.0);
                     let paused = self.scan_progress.as_ref()
                         .is_some_and(|p| p.paused.load(Ordering::Relaxed));
-                    ui.heading(if paused { "Paused" } else { "Scanning..." });
+                    let phase = self.scan_progress.as_ref().map_or(0, |p| p.phase.load(Ordering::Relaxed));
+                    ui.heading(if paused { "Paused" } else if phase == 1 { "Checking changes..." }
+                        else if phase == 2 { "Refreshing..." } else { "Scanning..." });
                     if let Some(ref prog) = self.scan_progress {
                         let files = prog.files_scanned.load(Ordering::Relaxed);
                         let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
                         let elapsed = prog.scan_start.elapsed().as_secs_f64();
                         ui.label(format!("{} files found", format_count(files)));
                         ui.label(format!("{} total", format_size(bytes)));
-                        if elapsed >= 1.0 && !paused {
+                        if elapsed >= 1.0 && !paused && phase == 0 {
                             let rate = files as f64 / elapsed;
                             ui.label(format!(
                                 "{} elapsed ({}/sec)",

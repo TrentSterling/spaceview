@@ -11,6 +11,10 @@ states at 1024x700 and 1400x860 logical sizes, probes live scanning for five sec
 captures a real scan progressing, pausing, resuming and canceling, then runs the
 existing 500,000-file camera stress harness. Output includes logs, timing CSVs,
 PNG captures and an EXE hash in `test-results/<timestamp>/`.
+It also compares cached scans against fresh inventories through real NTFS
+mutations, hardlinks, open writers, permission changes and fallback cases. Two
+additional native captures exercise Rescan, followed by a cross-process reuse
+probe. See `SCAN-CACHE.md` for the validation rules.
 
 Use a large folder for `LivePath`, one that takes at least several seconds to scan.
 The probe and live captures read that folder and cancel their own scan. Omitting
