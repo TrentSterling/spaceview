@@ -29,6 +29,10 @@ preview size, correct final totals, a full preview queue, zero-byte files, empty
 directories, case-insensitive system-folder exclusions, pause/resume, cancellation
 while paused, and aggregate area/path safety. Contrast sweeps cover 4,096 RGB
 colors in each mode, composited gradient/frost settings and real widget visuals.
+Text-fitting regressions cover wide glyphs, Unicode filenames, complete numeric
+values, insufficient row height and label plates staying within their tile.
+The native paused capture must show Paused with a static indicator; the resumed
+capture must restore Scanning and its spinner.
 
 The stronger text pass follows Trontop's separation of raw palette intent,
 protected text surfaces and corrected foreground ink. Text-bearing chrome uses

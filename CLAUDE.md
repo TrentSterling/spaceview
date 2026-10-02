@@ -23,7 +23,7 @@ Runs regressions, release build, native UI captures at two sizes, real live scan
 checks and 500,000-file stress. Inspect the PNGs after automated checks pass.
 See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
 
-## Architecture (v0.15.3)
+## Architecture (v0.15.4)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -43,7 +43,7 @@ See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
 - **Bounded memory (v0.12):** `EXPAND_CHILD_CAP = 2048` per expansion with a "+N more" aggregate tail node (`is_aggregate`, `child_index = AGGREGATE_INDEX`); `NODE_BUDGET = 250_000` global cap gates expansion; prune assigns fresh Vecs (never `clear()`, which retains capacity) and runs every 15 frames, or every frame while over budget. `WorldLayout.live_nodes` tracks the count incrementally; the stress harness cross-checks it against a full walk.
 - **Two-phase rendering:** Directories render as body, children, header. Headers drawn ON TOP of children, never obscured.
 - **Screen-space hit testing:** Hit test mirrors render traversal over the cached layouts and accumulates the `child_index` trail; `HoveredInfo.path_indices` resolves the real FileNode path in O(depth) via `resolve_path` (no name+size searching; aggregates resolve to None and get no filesystem actions).
-- **Text clipping:** All text uses `painter.with_clip_rect()` to prevent spilling beyond rect boundaries.
+- **Text fitting:** Treemap and file-type labels use measured glyph widths, single-row ellipses and complete-row height checks inside their clip rects. Size values are omitted when they cannot fit completely. Directory headers reserve measured size/count widths.
 - **Bounded camera:** No nav_stack. Camera with center+zoom, clamped to world bounds. MIN_ZOOM=1.0 (can't zoom past root), MAX_ZOOM=5000 (prevents coordinate overflow). Center clamped so viewport never leaves world_rect.
 - **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering.
 - **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny. Dynamic expand budget (32 during animation, 8 otherwise).
@@ -51,7 +51,7 @@ See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
 - **Color pipeline:** Visualization blocks retain vivid base_rgb colors. Text-bearing headers and label faces receive dark/light surface protection; text_color_for() picks black or white using ratio and APCA checks. Palette text in list views and the age legend receives foreground correction. Directory bodies retain explicit borders.
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
-- **Scan progress:** Shows elapsed time and files/sec rate during scans.
+- **Scan progress:** Shows elapsed time and files/sec rate during scans. Paused scans say Paused, use a static indicator and hide rates until resumed.
 - **Welcome screen:** Shows drive cards with capacity bars (blue/yellow/red by usage), name, type, filesystem. Click a drive to scan. "Open Folder..." button below as fallback. Keyboard shortcuts at the bottom.
 - **About dialog:** Auto-opens on first launch. Escape closes it. "Don't show on startup" checkbox persisted to `%APPDATA%/SpaceView/prefs.txt` (multi-key format). Manual toggle via About button always works.
 - **App icon:** `assets/icon.png` (256x256) + `assets/icon.ico` (multi-size). Treemap design matching docs SVG. Window icon via `with_icon()`, .exe icon via `build.rs`.

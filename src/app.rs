@@ -616,8 +616,9 @@ impl SpaceViewApp {
         if let Some(image) = image {
             let file = crate::gauntlet::LIVE_FILES[script.stage];
             crate::shots::save_png(&script.dir.join(file), &image).expect("save live screenshot");
-            script.record(format!("PASS {file}: worker_files={files} preview_files={preview_files} scanning={} elapsed_ms={:.1}",
-                self.scanning, progress.scan_start.elapsed().as_secs_f64() * 1000.0));
+            script.record(format!("PASS {file}: worker_files={files} preview_files={preview_files} scanning={} paused={} elapsed_ms={:.1}",
+                self.scanning, progress.paused.load(Ordering::Relaxed),
+                progress.scan_start.elapsed().as_secs_f64() * 1000.0));
             if script.stage == 0 { script.first_files = preview_files; }
             script.stage += 1;
             script.entered = std::time::Instant::now();
@@ -649,6 +650,7 @@ impl SpaceViewApp {
                 if script.entered.elapsed() > Duration::from_millis(450) {
                     assert_eq!(files, script.paused_files, "paused scan kept traversing");
                     assert!(self.scanning);
+                    assert!(progress.paused.load(Ordering::Relaxed));
                     script.capture(ctx);
                 }
             }
@@ -657,6 +659,7 @@ impl SpaceViewApp {
                 if script.entered.elapsed() > Duration::from_millis(500)
                     && files > script.paused_files && preview_files > script.first_files {
                     assert!(self.scanning);
+                    assert!(!progress.paused.load(Ordering::Relaxed));
                     script.capture(ctx);
                 }
             }
@@ -2029,7 +2032,9 @@ impl eframe::App for SpaceViewApp {
             if self.scanning {
                 ui.horizontal_wrapped(|ui| {
                     ui.separator();
-                    ui.spinner();
+                    let paused = self.scan_progress.as_ref()
+                        .is_some_and(|p| p.paused.load(Ordering::Relaxed));
+                    scan_indicator(ui, paused);
                     if let Some(ref prog) = self.scan_progress {
                         let files = prog.files_scanned.load(Ordering::Relaxed);
                         let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
@@ -2040,11 +2045,12 @@ impl eframe::App for SpaceViewApp {
                             0.0
                         };
                         let mut text = format!(
-                            "Scanning... {} files, {}",
+                            "{} {} files, {}",
+                            if paused { "Paused:" } else { "Scanning..." },
                             format_count(files),
                             format_size(bytes),
                         );
-                        if elapsed >= 1.0 {
+                        if elapsed >= 1.0 && !paused {
                             text += &format!(
                                 " - {} ({}/sec)",
                                 format_duration(elapsed),
@@ -2463,14 +2469,16 @@ impl eframe::App for SpaceViewApp {
             if self.scanning && self.scan_root.is_none() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() / 3.0);
-                    ui.heading("Scanning...");
+                    let paused = self.scan_progress.as_ref()
+                        .is_some_and(|p| p.paused.load(Ordering::Relaxed));
+                    ui.heading(if paused { "Paused" } else { "Scanning..." });
                     if let Some(ref prog) = self.scan_progress {
                         let files = prog.files_scanned.load(Ordering::Relaxed);
                         let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
                         let elapsed = prog.scan_start.elapsed().as_secs_f64();
                         ui.label(format!("{} files found", format_count(files)));
                         ui.label(format!("{} total", format_size(bytes)));
-                        if elapsed >= 1.0 {
+                        if elapsed >= 1.0 && !paused {
                             let rate = files as f64 / elapsed;
                             ui.label(format!(
                                 "{} elapsed ({}/sec)",
@@ -2479,7 +2487,7 @@ impl eframe::App for SpaceViewApp {
                             ));
                         }
                     }
-                    ui.spinner();
+                    scan_indicator(ui, paused);
                 });
                 return;
             }
@@ -3121,25 +3129,25 @@ impl eframe::App for SpaceViewApp {
 
                                 // Extension name
                                 let font_size = (inner.height() * 0.3).clamp(11.0, 24.0);
-                                let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
-                                let label = truncate_str(&ext.0, max_chars);
-                                paint_block_label(&text_painter,
+                                let name_rect = paint_block_label(&text_painter,
                                     inner.min + egui::vec2(4.0, 4.0),
-                                    label,
+                                    ext.0.clone(),
                                     egui::FontId::proportional(font_size),
                                     col,
+                                    true,
                                 );
 
                                 // Size and count
-                                if inner.height() > 36.0 {
+                                if let Some(name_rect) = name_rect {
                                     let info = format!("{} ({:.1}%, {} files)",
                                         format_size(ext.1), pct, format_count(ext.2));
                                     let info_size = (font_size * 0.7).clamp(11.0, 14.0);
                                     paint_block_label(&text_painter,
-                                        inner.min + egui::vec2(4.0, font_size + 6.0),
+                                        egui::pos2(inner.min.x + 4.0, name_rect.max.y + 2.0),
                                         info,
                                         egui::FontId::proportional(info_size),
                                         col,
+                                        false,
                                     );
                                 }
                             }
@@ -3446,33 +3454,22 @@ fn render_node(
                     } else {
                         format_size(node.size)
                     };
-                    let show_size = inner.width() > 100.0;
-                    let size_reserve = if show_size {
-                        size_text.len() as f32 * (font_size - 1.0) * 0.55 + 12.0
-                    } else {
-                        0.0
-                    };
-                    let name_width = inner.width() - 8.0 - size_reserve;
-                    // Quantize to steps of 4 chars: continuously-varying widths
-                    // during zoom would otherwise mint a new truncated string
-                    // (and a new galley) nearly every frame.
-                    let max_chars = ((name_width / (font_size * 0.55)).max(0.0) as usize) & !3;
-                    let label = truncate_str(&node.name, max_chars);
-                    text_painter.text(
-                        clipped.min + egui::vec2(3.0, 1.0),
-                        egui::Align2::LEFT_TOP,
-                        label,
-                        egui::FontId::proportional(font_size),
-                        text_color_for(hdr_col),
-                    );
+                    let content = clipped.shrink2(egui::vec2(3.0, 1.0));
+                    let ink = text_color_for(hdr_col);
+                    let size_galley = text_painter.layout_no_wrap(size_text,
+                        egui::FontId::proportional(font_size - 1.0), ink);
+                    let show_size = content.width() > size_galley.size().x + 60.0
+                        && content.height() >= size_galley.size().y;
+                    let name_width = content.width()
+                        - if show_size { size_galley.size().x + 8.0 } else { 0.0 };
+                    if let Some(name) = fitted_label(&text_painter, node.name.clone(),
+                        egui::FontId::proportional(font_size), ink,
+                        egui::vec2(name_width, content.height()), true) {
+                        text_painter.galley(content.min, name, ink);
+                    }
                     if show_size {
-                        text_painter.text(
-                            egui::pos2(clipped.max.x - 3.0, clipped.min.y + 1.0),
-                            egui::Align2::RIGHT_TOP,
-                            size_text,
-                            egui::FontId::proportional(font_size - 1.0),
-                            text_color_for(hdr_col),
-                        );
+                        text_painter.galley(egui::pos2(content.max.x - size_galley.size().x,
+                            content.min.y), size_galley, ink);
                     }
                 }
             }
@@ -3526,22 +3523,21 @@ fn render_node(
             if text_clip.width() > 0.0 && text_clip.height() > 0.0 {
                 let text_painter = painter.with_clip_rect(text_clip);
                 let font_size = 12.0f32.min(inner.height() - 3.0).round();
-                let max_chars = (((inner.width() - 6.0) / (font_size * 0.55)) as usize) & !3;
-                let label = truncate_str(&node.name, max_chars);
-
-                paint_block_label(&text_painter,
+                let name_rect = paint_block_label(&text_painter,
                     inner.min + egui::vec2(3.0, 2.0),
-                    label,
+                    node.name.clone(),
                     egui::FontId::proportional(font_size),
                     col,
+                    true,
                 );
 
-                if inner.height() > 28.0 {
+                if let Some(name_rect) = name_rect {
                     paint_block_label(&text_painter,
-                        inner.min + egui::vec2(3.0, font_size + 3.0),
+                        egui::pos2(inner.min.x + 3.0, name_rect.max.y + 2.0),
                         format_size(node.size),
                         egui::FontId::proportional(11.0),
                         col,
+                        false,
                     );
                 }
             }
@@ -3935,25 +3931,103 @@ fn text_color_for(bg: egui::Color32) -> egui::Color32 {
 /// Give small labels a protected tinted face; keep the surrounding tile vivid.
 /// Name and size both use full-strength ink instead of fading into the cushion.
 fn paint_block_label(painter: &egui::Painter, pos: egui::Pos2, text: String,
-    font: egui::FontId, tile: egui::Color32) {
-    if text.is_empty() { return }
+    font: egui::FontId, tile: egui::Color32, elide: bool) -> Option<egui::Rect> {
+    let clip = painter.clip_rect();
+    if !clip.contains(pos - egui::vec2(2.0, 0.0)) { return None }
     let face = crate::contrast::surface(tile, crate::theme::t().dark);
-    let galley = painter.layout_no_wrap(text, font, text_color_for(face));
-    painter.rect_filled(egui::Rect::from_min_size(pos - egui::vec2(2.0, 0.0),
-        galley.size() + egui::vec2(4.0, 1.0)), 1.0, face);
+    let available = clip.max - pos - egui::vec2(2.0, 1.0);
+    let galley = fitted_label(painter, text, font, text_color_for(face), available, elide)?;
+    let plate = egui::Rect::from_min_size(pos - egui::vec2(2.0, 0.0),
+        galley.size() + egui::vec2(4.0, 1.0));
+    painter.rect_filled(plate, 1.0, face);
     painter.galley(pos, galley, text_color_for(face));
+    Some(plate)
+}
+
+/// Measure glyphs instead of estimating character widths. Only complete rows
+/// are drawn; numeric detail is omitted rather than showing a partial value.
+fn fitted_label(painter: &egui::Painter, text: String, font: egui::FontId,
+    ink: egui::Color32, available: egui::Vec2, elide: bool) -> Option<Arc<egui::Galley>> {
+    if text.is_empty() || available.x < 8.0 || available.y < font.size { return None }
+    let galley = if elide {
+        let mut job = egui::text::LayoutJob::simple_singleline(text, font, ink);
+        // Bound cache churn while zooming, without estimating glyph widths.
+        job.wrap.max_width = (available.x / 8.0).floor() * 8.0;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        painter.layout_job(job)
+    } else {
+        painter.layout_no_wrap(text, font, ink)
+    };
+    (galley.size().x <= available.x && galley.size().y <= available.y).then_some(galley)
+}
+
+fn scan_indicator(ui: &mut egui::Ui, paused: bool) {
+    if paused {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        for x in [4.0, 11.0] {
+            ui.painter().rect_filled(egui::Rect::from_min_size(
+                rect.min + egui::vec2(x, 3.0), egui::vec2(3.0, 12.0)), 0.5,
+                ui.visuals().text_color());
+        }
+    } else {
+        ui.spinner();
+    }
 }
 
 // ===================== Helpers =====================
 
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if max_chars < 4 {
-        return String::new();
+#[cfg(test)]
+mod label_fit_tests {
+    use super::*;
+
+    #[test]
+    fn wide_and_unicode_names_fit_measured_rows() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            for text in ["WWWWWWWWWW-wide-file.bin", "日本語のファイル名.dat",
+                "résumé-🛰-archive.zip"] {
+                for width in [24.0, 40.0, 80.0, 200.0] {
+                    let available = egui::vec2(width, 20.0);
+                    let galley = fitted_label(&painter, text.into(),
+                        egui::FontId::proportional(12.0), egui::Color32::WHITE,
+                        available, true).unwrap_or_else(|| panic!("name {text:?} did not fit {width}"));
+                    assert_eq!(galley.rows.len(), 1);
+                    assert!(galley.size().x <= width);
+                    assert!(galley.size().y <= available.y);
+                    if width == 24.0 { assert!(galley.elided); }
+                }
+            }
+        });
     }
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_chars - 3])
+
+    #[test]
+    fn small_tiles_omit_partial_values_and_rows() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            let font = egui::FontId::proportional(12.0);
+            let ink = egui::Color32::WHITE;
+            assert!(fitted_label(&painter, "name.bin".into(), font.clone(), ink,
+                egui::vec2(4.0, 30.0), true).is_none());
+            let size = "123.45 GB";
+            let measured = painter.layout_no_wrap(size.into(), font.clone(), ink).size();
+            assert!(fitted_label(&painter, size.into(), font.clone(), ink,
+                egui::vec2(measured.x - 1.0, 30.0), false).is_none());
+            assert!(fitted_label(&painter, "name.bin".into(), font.clone(), ink,
+                egui::vec2(100.0, measured.y - 1.0), true).is_none());
+            assert!(!fitted_label(&painter, size.into(), font.clone(), ink,
+                measured, false).unwrap().elided);
+
+            let clip = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(40.0, 20.0));
+            let painter = painter.with_clip_rect(clip);
+            let plate = paint_block_label(&painter, egui::pos2(3.0, 2.0),
+                "WWWWWWWWWW.bin".into(), font.clone(), ink, true).unwrap();
+            assert!(clip.contains_rect(plate));
+            assert!(paint_block_label(&painter, egui::pos2(3.0, 12.0),
+                size.into(), font, ink, false).is_none());
+        });
     }
 }
 

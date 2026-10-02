@@ -1,3 +1,11 @@
+## v0.15.4 - fitted labels + paused scan status
+
+- Measure text widths for treemap and file-type labels, use ellipses for names,
+  and show size/detail rows only when they fit completely. Reserve measured
+  size/count widths in directory headers and handle Unicode filenames safely.
+- Show Paused with a static pause indicator and hide scan rates while paused,
+  both before and after the first live preview.
+
 ## v0.15.3 - stronger contrast + live scan progress
 
 - Protect text-bearing surfaces after gradient and panel compositing, including
