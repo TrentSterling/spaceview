@@ -40,7 +40,7 @@
 ## Features
 
 - **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Vivid SpaceMonger-style colors. Cushion shading for 3D depth.
-- **Live Scan.** See the first discovered file immediately, then previews about every 250 ms while large folders are still scanning. Pause, resume, cancel. Drag-and-drop folders.
+- **Live Scan.** See the first discovered file immediately, then previews about every 500 ms while large folders are still scanning. Pause, resume, cancel. Drag-and-drop folders.
 - **Verified Rescans.** Persistent NTFS caches use the Windows change journal to refresh changed folders and reuse validated structure. Current file metadata is checked along the cached paths; missing history, permission changes and corrupt caches trigger full scans. Click Rescan, or right-click it to force a full scan. [Details](docs/SCAN-CACHE.md).
 - **Readable UI.** Protected text surfaces, visible button outlines, larger treemap labels, and stronger dark/light contrast across gradients and interaction states.
 - **5 View Modes.** Map (treemap), List (sortable directory browser), Top Files (1000 largest), Types (extension treemap), Duplicates. Switch instantly via tabs.

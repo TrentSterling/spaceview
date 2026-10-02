@@ -69,27 +69,33 @@ try {
     Remove-Item Env:SPACEVIEW_DISABLE_CACHE -ErrorAction SilentlyContinue
     if ($LivePath) {
         if (-not (Test-Path -LiteralPath $LivePath -PathType Container)) { throw "Missing live scan folder: $LivePath" }
+        # Compare the same 500,000 files, after warming that same prefix.
+        # Sequential five-second probes reached different folders and gave
+        # the later mode a large filesystem-cache advantage under load.
+        $warmup = Join-Path $Output 'probe-warmup'
+        Invoke-NativeCheck 'probe-warmup' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $warmup + '"'), '--probe-seconds', '30', '--probe-files', '500000', '--probe-without-previews')
         $probe = Join-Path $Output 'probe'
-        Invoke-NativeCheck 'probe' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $probe + '"'), '--probe-seconds', '5')
+        Invoke-NativeCheck 'probe' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $probe + '"'), '--probe-seconds', '30', '--probe-files', '500000')
         Get-Content -LiteralPath (Join-Path $probe 'scan-probe.txt')
         $quietProbe = Join-Path $Output 'probe-without-previews'
-        Invoke-NativeCheck 'probe-without-previews' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $quietProbe + '"'), '--probe-seconds', '5', '--probe-without-previews')
+        Invoke-NativeCheck 'probe-without-previews' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $quietProbe + '"'), '--probe-seconds', '30', '--probe-files', '500000', '--probe-without-previews')
         $plainProbe = Join-Path $Output 'probe-without-cache'
-        Invoke-NativeCheck 'probe-without-cache' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $plainProbe + '"'), '--probe-seconds', '5', '--probe-without-cache')
-        function Read-ProbeFiles([string]$Directory) {
+        Invoke-NativeCheck 'probe-without-cache' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $plainProbe + '"'), '--probe-seconds', '30', '--probe-files', '500000', '--probe-without-cache')
+        function Read-ProbeSeconds([string]$Directory) {
             $report = Get-Content -LiteralPath (Join-Path $Directory 'scan-probe.txt') -Raw
-            if ($report -notmatch 'files discovered: (\d+)') { throw 'Missing probe file count' }
-            return [double]$Matches[1]
+            if ($report -notmatch 'files discovered: (\d+)' -or [double]$Matches[1] -lt 500000) { throw 'Probe failed to reach the shared file target' }
+            if ($report -notmatch 'elapsed seconds: ([\d.]+)') { throw 'Missing probe time' }
+            return [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
         }
-        $liveFiles = Read-ProbeFiles $probe
-        $quietFiles = Read-ProbeFiles $quietProbe
-        $plainFiles = Read-ProbeFiles $plainProbe
-        if ($liveFiles -lt $quietFiles * 0.7) { throw 'Live previews caused severe scan slowdown' }
-        if ($liveFiles -lt $plainFiles * 0.7) { throw 'Cache seeding caused severe cold-scan slowdown' }
-        Write-Host "[SpaceViewGauntlet] PASS scan throughput: cache-live=$liveFiles cache-quiet=$quietFiles plain-live=$plainFiles (five seconds each)"
+        $liveSeconds = Read-ProbeSeconds $probe
+        $quietSeconds = Read-ProbeSeconds $quietProbe
+        $plainSeconds = Read-ProbeSeconds $plainProbe
+        if ($liveSeconds -gt $quietSeconds / 0.7) { throw 'Live previews caused severe scan slowdown' }
+        if ($liveSeconds -gt $plainSeconds / 0.7) { throw 'Cache seeding caused severe cold-scan slowdown' }
+        Write-Host "[SpaceViewGauntlet] PASS scan throughput: cache-live=$liveSeconds cache-quiet=$quietSeconds plain-live=$plainSeconds seconds (500,000-file target each)"
         $live = Join-Path $Output 'live'
         Invoke-NativeCheck 'live' @('--live-shots', ('"' + $live + '"'), '--scan', ('"' + $LivePath + '"'), '--shot-width', '1024', '--shot-height', '700')
-        if (@(Get-ChildItem -LiteralPath $live -Filter '*.png').Count -ne 5) { throw 'Missing live scan screenshots' }
+        if (@(Get-ChildItem -LiteralPath $live -Filter '*.png').Count -ne 7) { throw 'Missing live scan screenshots' }
         $liveReport = Get-Content -LiteralPath (Join-Path $live 'live-report.txt') -Raw
         if ($liveReport -notmatch 'COMPLETE native live scan checks passed') { throw 'Live scan checks incomplete' }
         if ($liveReport -notmatch 'PASS preview continuity:') { throw 'Preview frame checks incomplete' }
@@ -127,7 +133,7 @@ try {
         sha256 = (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash
         bytes = $binary.Length
         livePath = $LivePath
-        screenshots = 38 + $(if ($LivePath) { 5 } else { 0 })
+        screenshots = 38 + $(if ($LivePath) { 7 } else { 0 })
         visualReview = 'pending human or agent image inspection'
     }
     $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Output 'receipt.json') -Encoding UTF8

@@ -7,16 +7,18 @@ Run from the checkout:
 ```
 
 The command runs Rust regressions, builds the release EXE, captures 18 native UI
-states at 1024x700 and 1400x860 logical sizes, probes live scanning for five seconds,
+states at 1024x700 and 1400x860 logical sizes, compares a shared 500,000-file prefix,
 captures a real scan progressing, pausing, resuming and canceling, then runs the
 existing 500,000-file camera stress harness. Output includes logs, timing CSVs,
 PNG captures and an EXE hash in `test-results/<timestamp>/`.
 
-Live tests use the shipped cache-enabled cold scanner. Five-second timing
-probes compare it with previews disabled and with ordinary traversal; large
+Live tests use the shipped cache-enabled cold scanner. After a warmup, timing
+probes compare the same 500,000-file target with previews disabled and with ordinary traversal; large
 throughput regressions fail the run. The native live test checks every rendered
 frame for collapsed visible detail, including the first frame after each
-preview replacement. The scanner also has a Windows regression for multi-page
+preview replacement. Seven live captures include a real Windows minimize/restore,
+a smaller restored viewport and a return to the original size. Every live
+frame checks that the treemap fills the available viewport. The scanner also has a Windows regression for multi-page
 directory listings, Unicode names and file-reference identities.
 It also compares cached scans against fresh inventories through real NTFS
 mutations, hardlinks, open writers, permission changes and fallback cases. Two

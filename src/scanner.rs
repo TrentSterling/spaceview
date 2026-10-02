@@ -74,7 +74,7 @@ impl ScanProgress {
     }
 }
 
-const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
+const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
 pub const PREVIEW_NODE_BUDGET: usize = 16_384;
 const PREVIEW_CHILD_CAP: usize = 512;
 
@@ -109,7 +109,7 @@ pub(crate) fn append_child(parent: &mut FileNode, child: FileNode) {
 }
 
 pub(crate) fn read_entries(root: &Path, identify: bool)
-    -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<FileNode>>>> {
+    -> std::io::Result<EntryIterator> {
     #[cfg(windows)]
     if identify {
         if let Ok(entries) = crate::journal::directory_entries(root) {
@@ -144,6 +144,36 @@ pub(crate) fn read_entries(root: &Path, identify: bool)
             size, is_dir: kind.is_dir(), file_count: 0, modified, children: Vec::new(),
             file_id: stamp.as_ref().map_or(0, |s| s.id), volatile: stamp.as_ref().is_none_or(|s| s.volatile) }))
     })))
+}
+
+type EntryIterator = Box<dyn Iterator<Item = std::io::Result<FileNode>> + Send>;
+
+/// Overlap directory opens and their first metadata page with tree building.
+/// Only 32 cursors can be outstanding; no full subtrees or file contents are
+/// read ahead, and the scanner still consumes records in traversal order.
+#[derive(Default)]
+struct DirectoryPrefetch {
+    pending: std::collections::HashMap<PathBuf, std::sync::mpsc::Receiver<std::io::Result<EntryIterator>>>,
+}
+
+impl DirectoryPrefetch {
+    fn schedule(&mut self, path: &Path, identify: bool) {
+        if self.pending.len() >= 32 || self.pending.contains_key(path) { return; }
+        static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+        let pool = POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(4)
+            .thread_name(|i| format!("spaceview-directory-{i}")).build().expect("directory pool"));
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let path = path.to_path_buf();
+        self.pending.insert(path.clone(), rx);
+        pool.spawn(move || { let _ = tx.send(read_entries(&path, identify)); });
+    }
+
+    fn open(&mut self, path: &Path, identify: bool) -> std::io::Result<EntryIterator> {
+        match self.pending.remove(path) {
+            Some(rx) => rx.recv().unwrap_or_else(|_| read_entries(path, identify)),
+            None => read_entries(path, identify),
+        }
+    }
 }
 
 /// Copy bounded detail without walking/sorting millions of discovered files.
@@ -210,6 +240,8 @@ struct Scanner {
     last_snapshot: Option<Instant>,
     interval: Duration,
     identify: bool,
+    prefetch: DirectoryPrefetch,
+    publish_checks: usize,
 }
 
 impl Scanner {
@@ -221,6 +253,8 @@ impl Scanner {
             last_snapshot: None,
             interval: SNAPSHOT_INTERVAL,
             identify: false,
+            prefetch: DirectoryPrefetch::default(),
+            publish_checks: 0,
         }
     }
 
@@ -228,6 +262,11 @@ impl Scanner {
         let Some(tx) = self.snapshots.as_ref() else {
             return;
         };
+        // Avoid a clock query for every file. The first file is immediate.
+        self.publish_checks += 1;
+        if self.last_snapshot.is_some() && !self.interval.is_zero() && self.publish_checks % 64 != 0 {
+            return;
+        }
         if self.progress.files_scanned.load(Ordering::Relaxed) == 0
             || self
                 .last_snapshot
@@ -268,8 +307,19 @@ impl Scanner {
         self.progress
             .directories_read
             .fetch_add(1, Ordering::Relaxed);
-        if let Ok(entries) = read_entries(root, self.identify) {
-            for entry in entries {
+        if let Ok(mut entries) = self.prefetch.open(root, self.identify) {
+            loop {
+            let batch: Vec<_> = entries.by_ref().take(128).collect();
+            if batch.is_empty() { break; }
+            if self.identify {
+                for entry in batch.iter().flatten().filter(|entry| entry.is_dir) {
+                    if !entry.name.eq_ignore_ascii_case("System Volume Information")
+                        && !entry.name.eq_ignore_ascii_case("$Recycle.Bin") {
+                        self.prefetch.schedule(&entry.path, self.identify);
+                    }
+                }
+            }
+            for entry in batch {
                 let Ok(entry) = entry else {
                     self.stack.last_mut().unwrap().volatile = true;
                     continue;
@@ -295,6 +345,7 @@ impl Scanner {
                     append_child(self.stack.last_mut().unwrap(), entry);
                 }
                 self.publish();
+            }
             }
         } else {
             self.stack.last_mut().unwrap().volatile = true;

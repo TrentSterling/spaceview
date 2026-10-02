@@ -711,6 +711,34 @@ impl SpaceViewApp {
                 }
             }
             4 => {
+                if !script.initialized {
+                    script.initialized = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    let restore_ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(400));
+                        #[cfg(windows)]
+                        crate::gauntlet::restore_test_window();
+                        restore_ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(760.0, 460.0)));
+                        restore_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        restore_ctx.request_repaint();
+                    });
+                }
+                if script.entered.elapsed() > Duration::from_millis(1100)
+                    && ctx.input(|i| i.viewport().minimized) != Some(true)
+                    && self.last_viewport.width() < 780.0 { script.capture(ctx); }
+            }
+            5 => {
+                if !script.initialized {
+                    script.initialized = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1024.0, 700.0)));
+                    // Exercise a resize coinciding with preview replacement.
+                    self.world_layout = None;
+                }
+                if script.entered.elapsed() > Duration::from_millis(600)
+                    && self.last_viewport.width() > 1000.0 { script.capture(ctx); }
+            }
+            6 => {
                 progress.cancel.store(true, Ordering::Relaxed);
                 if !self.scanning && self.scan_root.is_none() { script.capture(ctx); }
             }
@@ -986,25 +1014,11 @@ impl SpaceViewApp {
 
     fn rebuild_layout_preserving_camera(&mut self, viewport: egui::Rect) {
         if let Some(ref root) = self.scan_root {
-            let old_aspect = self.world_layout.as_ref()
-                .map(|l| l.world_rect.height() / l.world_rect.width())
-                .unwrap_or(1.0);
             let new_aspect = viewport.height() / viewport.width();
-
-            // Remap camera center.y proportionally
-            let y_ratio = if old_aspect > 0.0 {
-                new_aspect / old_aspect
-            } else {
-                1.0
-            };
 
             let layout = WorldLayout::new(root, new_aspect);
             self.camera.set_world_rect(layout.world_rect);
             self.world_layout = Some(layout);
-
-            // Scale the camera center Y proportionally
-            self.camera.center.y *= y_ratio;
-            self.camera.target_center.y *= y_ratio;
         }
     }
 
@@ -2093,6 +2107,8 @@ impl eframe::App for SpaceViewApp {
 
             // Keep view/scan controls on their own row. They must never compete
             // with the caption buttons or draw over other toolbar controls.
+            // Delineate the window's grab row from the content beneath it.
+            ui.separator();
             if self.scanning {
                 ui.horizontal_wrapped(|ui| {
                     ui.separator();
@@ -2583,6 +2599,9 @@ impl eframe::App for SpaceViewApp {
             // If scanning with data, fall through to render the treemap live
 
             let viewport = ui.available_rect_before_wrap();
+            if !viewport.is_finite() || viewport.width() <= 1.0 || viewport.height() <= 1.0 {
+                return;
+            }
             self.last_viewport = viewport;
 
             // Build layout on first frame after scan (or on resize)
@@ -2594,7 +2613,7 @@ impl eframe::App for SpaceViewApp {
             if let Some(ref layout) = self.world_layout {
                 let current_aspect = viewport.height() / viewport.width();
                 let layout_aspect = layout.world_rect.height() / layout.world_rect.width();
-                if (current_aspect - layout_aspect).abs() > 0.01 {
+                if (current_aspect - layout_aspect).abs() > 0.00001 {
                     self.rebuild_layout_preserving_camera(viewport);
                 }
             }
@@ -2609,6 +2628,13 @@ impl eframe::App for SpaceViewApp {
 
             // 1. Advance camera animation
             let camera_moving = self.camera.tick(dt, viewport);
+            if self.live_shots.is_some() {
+                let world = self.world_layout.as_ref().unwrap().world_rect;
+                let drawn = self.camera.world_to_screen(world, viewport);
+                assert!((drawn.min.y - viewport.min.y).abs() < 0.1
+                    && (drawn.max.y - viewport.max.y).abs() < 0.1,
+                    "live treemap left a vertical gap after resize: {drawn:?} vs {viewport:?}");
+            }
 
             // Automated camera thrash (--stress): drives the real scroll_zoom/
             // drag_pan entry points at simulated positions, no OS input injection.
@@ -2765,8 +2791,10 @@ impl eframe::App for SpaceViewApp {
                 }
                 layout.maybe_prune(&self.camera, viewport);
                 if let Some(script) = self.live_shots.as_mut() {
-                    assert_eq!(layout.pending_visible_detail(&self.camera, viewport), 0,
-                        "preview displayed a collapsed frame before its detail was ready");
+                    if self.scanning {
+                        assert_eq!(layout.pending_visible_detail(&self.camera, viewport), 0,
+                            "preview displayed a collapsed frame before its detail was ready");
+                    }
                     script.layout_frames += 1;
                     if root.file_count != script.layout_last_files {
                         script.layout_last_files = root.file_count;
@@ -3802,28 +3830,60 @@ fn find_dir_by_path<'a>(root: &'a FileNode, path: &[String]) -> Option<&'a FileN
 /// oldest/newest modified range for the age map. Runs on the scan thread for a
 /// real scan and on the UI thread for the synthetic showcase drive.
 fn derive_scan_stats(root: &FileNode) -> (Vec<(String, u64, String)>, Vec<(String, u64, u64)>, (u64, u64)) {
-    let time_range = compute_time_range(root);
-    let mut all_files: Vec<(String, u64, String)> = Vec::new();
-    collect_all_files(root, &mut all_files);
-    let mut ext_map: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
-    for (name, size, _) in &all_files {
-        let ext = name.rsplit('.').next()
-            .filter(|e| e.len() < 10 && *e != name.as_str())
-            .map(|e| format!(".{}", e.to_lowercase()))
-            .unwrap_or_else(|| "(no ext)".to_string());
-        let entry = ext_map.entry(ext).or_insert((0, 0));
-        entry.0 += size;
-        entry.1 += 1;
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap};
+    struct Stats<'a> {
+        heap: BinaryHeap<Reverse<(u64, Reverse<usize>, usize)>>,
+        largest: Vec<(&'a FileNode, usize)>,
+        extensions: HashMap<String, (u64, u64)>,
+        count: usize,
+        min_time: u64,
+        max_time: u64,
     }
-    let mut ext_list: Vec<(String, u64, u64)> = ext_map.into_iter()
+    fn visit<'a>(node: &'a FileNode, stats: &mut Stats<'a>) {
+        for child in &node.children {
+            if child.is_dir { visit(child, stats); continue; }
+            if child.name == "<Free Space>" { continue; }
+            let ordinal = stats.count;
+            stats.count += 1;
+            let slot = if stats.largest.len() < 1000 {
+                stats.largest.push((child, ordinal));
+                Some(stats.largest.len() - 1)
+            } else if child.size > stats.heap.peek().unwrap().0.0 {
+                let slot = stats.heap.pop().unwrap().0.2;
+                stats.largest[slot] = (child, ordinal);
+                Some(slot)
+            } else { None };
+            if let Some(slot) = slot { stats.heap.push(Reverse((child.size, Reverse(ordinal), slot))); }
+            let ext = child.name.rsplit('.').next()
+                .filter(|e| e.len() < 10 && *e != child.name.as_str())
+                .map(|e| format!(".{}", e.to_lowercase()))
+                .unwrap_or_else(|| "(no ext)".to_string());
+            let entry = stats.extensions.entry(ext).or_default();
+            entry.0 += child.size;
+            entry.1 += 1;
+            if child.modified > 0 {
+                stats.min_time = stats.min_time.min(child.modified);
+                stats.max_time = stats.max_time.max(child.modified);
+            }
+        }
+    }
+    // Hold references to at most 1000 files. A drive containing millions of
+    // files must not duplicate all its names and paths during finalization.
+    let mut stats = Stats { heap: BinaryHeap::new(), largest: Vec::new(),
+        extensions: HashMap::new(), count: 0, min_time: u64::MAX, max_time: 0 };
+    visit(root, &mut stats);
+    let mut ext_list: Vec<(String, u64, u64)> = stats.extensions.into_iter()
         .map(|(ext, (size, count))| (ext, size, count))
         .collect();
     ext_list.sort_by(|a, b| b.1.cmp(&a.1));
-    all_files.sort_by(|a, b| b.1.cmp(&a.1));
-    all_files.truncate(1000);
-    (all_files, ext_list, time_range)
+    stats.largest.sort_by_key(|(file, ordinal)| (Reverse(file.size), *ordinal));
+    let largest = stats.largest.into_iter().map(|(file, _)|
+        (file.name.clone(), file.size, file.path.to_string_lossy().into_owned())).collect();
+    (largest, ext_list, (if stats.min_time == u64::MAX { 0 } else { stats.min_time }, stats.max_time))
 }
 
+#[cfg(test)]
 fn compute_time_range(node: &FileNode) -> (u64, u64) {
     let mut min_t = u64::MAX;
     let mut max_t = 0u64;
@@ -3832,6 +3892,7 @@ fn compute_time_range(node: &FileNode) -> (u64, u64) {
     (min_t, max_t)
 }
 
+#[cfg(test)]
 fn compute_time_range_recursive(node: &FileNode, min_t: &mut u64, max_t: &mut u64) {
     if !node.is_dir && node.modified > 0 && node.name != "<Free Space>" {
         if node.modified < *min_t { *min_t = node.modified; }
@@ -3935,6 +3996,7 @@ fn hash_file_full(path: &str) -> std::io::Result<u64> {
     Ok(hasher.finish())
 }
 
+#[cfg(test)]
 fn collect_all_files(node: &FileNode, files: &mut Vec<(String, u64, String)>) {
     for child in &node.children {
         if child.is_dir {
@@ -3946,6 +4008,39 @@ fn collect_all_files(node: &FileNode, files: &mut Vec<(String, u64, String)>) {
 }
 
 // ===================== Colors =====================
+
+#[cfg(test)]
+mod scan_stats_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_stats_match_complete_inventory_including_tied_sizes() {
+        for count in [0, 12, 5000] {
+            let mut root = crate::stress::generate_synthetic_tree(count);
+            fn tie_sizes(node: &mut FileNode) {
+                for child in &mut node.children {
+                    if child.is_dir { tie_sizes(child); }
+                    else { child.size %= 11; }
+                }
+            }
+            tie_sizes(&mut root);
+            let mut expected = Vec::new();
+            collect_all_files(&root, &mut expected);
+            let mut extensions = std::collections::HashMap::<String, (u64, u64)>::new();
+            for (name, size, _) in &expected {
+                let ext = name.rsplit('.').next().filter(|e| e.len() < 10 && *e != name.as_str())
+                    .map(|e| format!(".{}", e.to_lowercase())).unwrap_or_else(|| "(no ext)".into());
+                let entry = extensions.entry(ext).or_default(); entry.0 += size; entry.1 += 1;
+            }
+            expected.sort_by(|a, b| b.1.cmp(&a.1)); expected.truncate(1000);
+            let (largest, actual_extensions, times) = derive_scan_stats(&root);
+            assert_eq!(largest, expected);
+            assert_eq!(times, compute_time_range(&root));
+            assert_eq!(actual_extensions.into_iter().map(|(ext, size, count)| (ext, (size, count)))
+                .collect::<std::collections::HashMap<_, _>>(), extensions);
+        }
+    }
+}
 
 fn dir_color(ci: usize, theme: ColorTheme) -> egui::Color32 {
     let (r, g, b) = theme.base_rgb(ci);

@@ -21,9 +21,9 @@ cargo run            # run in debug mode
 **Verification:** `./tools/gauntlet.ps1 -LivePath 'C:/path/to/a/large/folder'`.
 Runs regressions, release build, native UI captures at two sizes, real live scan
 checks and 500,000-file stress. Inspect the PNGs after automated checks pass.
-See `docs/GAUNTLET.md` and `docs/QA-v0.16.1.md`.
+See `docs/GAUNTLET.md` and `docs/QA-v0.16.2.md`.
 
-## Architecture (v0.16.1)
+## Architecture (v0.16.2)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -52,7 +52,7 @@ See `docs/GAUNTLET.md` and `docs/QA-v0.16.1.md`.
 - **Color themes:** 3 HSL-based themes (Rainbow, Neon, Ocean) using golden angle (137.508 degrees) hue spacing. High lightness (L=0.60-0.65) for vivid SpaceMonger-style colors. Selectable via ComboBox. Colors assigned by depth, never change with zoom.
 - **Color pipeline:** Visualization blocks retain vivid base_rgb colors. Text-bearing headers and label faces receive dark/light surface protection; text_color_for() picks black or white using ratio and APCA checks. Palette text in list views and the age legend receives foreground correction. Directory bodies retain explicit borders.
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
-- **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
+- **Camera-preserving resize:** Camera-owned world bounds remap current, target and animation centers on every layout replacement. Stationary cameras clamp after restore; invalid minimized viewports are ignored.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans. Paused scans say Paused, use a static indicator and hide rates until resumed.
 - **Verified rescans (v0.16.0):** Reuse structure after validating volume/root/security identity and complete journal coverage. Freshly enumerate dirty parents, route every hardlink and re-read incomplete branches. Check current file identity, size and last-write time along every cached path with a bounded eight-thread pool; journal reasons alone cannot prove metadata freshness for open handles. Baselines are anchored before reads; catch up concurrent changes or fall back to live full scanning. Disk cache: eight entries / 512 MiB, integrity-checked and atomically replaced. Rescan defaults to validation; its context menu offers Full scan. See `docs/SCAN-CACHE.md`.
 - **Welcome screen:** Shows drive cards with capacity bars (blue/yellow/red by usage), name, type, filesystem. Click a drive to scan. "Open Folder..." button below as fallback. Keyboard shortcuts at the bottom.
@@ -66,7 +66,7 @@ See `docs/GAUNTLET.md` and `docs/QA-v0.16.1.md`.
 - **Search bar:** Text filter in toolbar. Filters List and Top Files views by filename/path match.
 - **Free space block:** Injected as child node in build_layout. Medium green rgb(60,140,60). Toggle via toolbar button.
 - **Right-click context menu:** Available in both Treemap and List views. Open in Explorer, Copy Path, Delete to Recycle Bin.
-- **Live scan visualization (v0.15.3):** Directory entries stream directly. `scan_directory_live()` publishes immediately after the first file, then every 250 ms inside unfinished folders. Previews include the active ancestor chain, cap detail at 16,384 nodes, and preserve totals through non-actionable aggregate tiles. A one-item sync channel uses nonblocking publication. UI rebuilds preserve the camera and invalidate tree references. The final completion channel carries the full tree.
+- **Live scan visualization (v0.15.3):** Directory entries stream directly. `scan_directory_live()` publishes immediately after the first file, then every 500 ms inside unfinished folders. Previews include the active ancestor chain, cap detail at 16,384 nodes, and preserve totals through non-actionable aggregate tiles. A one-item sync channel uses nonblocking publication. UI rebuilds preserve the camera and invalidate tree references. The final completion channel carries the full tree.
 - **Deferred drops:** When switching drives, old FileNode/WorldLayout trees are moved to a background thread for deallocation. Prevents UI freeze from dropping millions of allocations on the main thread.
 - **Scan thread compute:** `compute_time_range()` and file collection run on the scan thread, not the UI thread. Results are bundled with the completion message.
 - **Window position persistence:** Window position and size saved to prefs.txt on exit, restored on launch. Supports multi-monitor setups.
@@ -98,3 +98,5 @@ See `tasks.md` for full backlog (sourced from SpaceMonger, WinDirStat, SpaceSnif
 - SpaceMonger 1.x source. XOR-rect animation, radix sort.
 - SpaceSniffer. Real-time update approach.
 - WinDirStat. Treemap rendering reference.
+
+- **Cold scan I/O (v0.16.2):** Four workers prefetch at most 32 directory cursors and first metadata pages. The scanner consumes records in traversal order; no file contents or complete subtrees are prefetched. Final statistics retain only the largest 1,000 file references rather than copying every path.

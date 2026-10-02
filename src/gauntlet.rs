@@ -12,8 +12,28 @@ pub const LIVE_FILES: &[&str] = &[
     "02-growing-scan.png",
     "03-paused.png",
     "04-resumed.png",
-    "05-canceled.png",
+    "05-restored-narrow.png",
+    "06-restored-original.png",
+    "07-canceled.png",
 ];
+
+#[cfg(windows)]
+pub fn restore_test_window() {
+    use windows_sys::Win32::Foundation::*;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe extern "system" fn restore(hwnd: HWND, _: LPARAM) -> BOOL {
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == GetCurrentProcessId() && IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        1
+    }
+    // Only the gauntlet's own process is affected. A repaint command alone
+    // cannot restore a minimized window whose redraws have been suspended.
+    unsafe { EnumWindows(Some(restore), 0); }
+}
 
 pub struct CacheScript {
     pub dir: PathBuf,
@@ -84,7 +104,7 @@ fn node_count(node: &FileNode) -> usize {
 }
 
 /// Read-only timing probe against real files, independent of GPU/window startup.
-pub fn scan_probe(path: &Path, output: &Path, seconds: f32, cache: bool, previews: bool) {
+pub fn scan_probe(path: &Path, output: &Path, seconds: f32, cache: bool, previews: bool, file_limit: u64) {
     std::fs::create_dir_all(output).expect("create probe output");
     let mut log = std::fs::File::create(output.join("scan-probe.csv")).unwrap();
     writeln!(
@@ -108,6 +128,7 @@ pub fn scan_probe(path: &Path, output: &Path, seconds: f32, cache: bool, preview
     let mut count = 0;
     let mut previous_files = 0;
     while start.elapsed().as_secs_f32() < seconds {
+        if file_limit > 0 && progress.files_scanned.load(Ordering::Relaxed) >= file_limit { break; }
         match rx.recv_timeout(Duration::from_millis(30)) {
             Ok(tree) => {
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -153,8 +174,9 @@ pub fn scan_probe(path: &Path, output: &Path, seconds: f32, cache: bool, preview
         assert!(first < 1000.0, "first live preview took {first:.2}ms");
         assert!(count >= 2, "select a folder large enough for repeated live previews");
     }
-    let report = format!("[SpaceViewGauntlet] scan path: {}\n[SpaceViewGauntlet] cache identities: {cache}; previews: {previews}\n[SpaceViewGauntlet] first preview: {:.2} ms\n[SpaceViewGauntlet] live previews: {count}\n[SpaceViewGauntlet] files discovered: {}\n[SpaceViewGauntlet] completed: {completed}\n[SpaceViewGauntlet] COMPLETE scan probe passed\n",
-        path.display(), first.unwrap_or(0.0), progress.files_scanned.load(Ordering::Relaxed));
+    let report = format!("[SpaceViewGauntlet] scan path: {}\n[SpaceViewGauntlet] cache identities: {cache}; previews: {previews}\n[SpaceViewGauntlet] first preview: {:.2} ms\n[SpaceViewGauntlet] live previews: {count}\n[SpaceViewGauntlet] files discovered: {}\n[SpaceViewGauntlet] directories read: {}\n[SpaceViewGauntlet] elapsed seconds: {:.3}\n[SpaceViewGauntlet] completed: {completed}\n[SpaceViewGauntlet] COMPLETE scan probe passed\n",
+        path.display(), first.unwrap_or(0.0), progress.files_scanned.load(Ordering::Relaxed),
+        progress.directories_read.load(Ordering::Relaxed), start.elapsed().as_secs_f64());
     std::fs::write(output.join("scan-probe.txt"), &report).unwrap();
     eprint!("{report}");
 }

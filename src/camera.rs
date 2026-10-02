@@ -68,6 +68,14 @@ impl Camera {
 
     /// Set the world bounds for camera clamping.
     pub fn set_world_rect(&mut self, rect: egui::Rect) {
+        // Preview replacement may coincide with a resize while there is no
+        // old layout left. Use the camera's own bounds for every remapping.
+        let ratio = rect.height() / self.world_rect.height();
+        if ratio.is_finite() && ratio > 0.0 {
+            self.center.y *= ratio;
+            self.target_center.y *= ratio;
+            self.anim_start_center.y *= ratio;
+        }
         self.world_rect = rect;
     }
 
@@ -124,6 +132,9 @@ impl Camera {
     /// Advance animations. Call once per frame.
     /// Returns true if the camera is still moving (request_repaint needed).
     pub fn tick(&mut self, dt: f32, viewport: egui::Rect) -> bool {
+        if !viewport.is_finite() || viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+            return false;
+        }
         if self.animating {
             self.anim_progress += dt / SNAP_DURATION;
             if self.anim_progress >= 1.0 {
@@ -167,9 +178,9 @@ impl Camera {
             self.center = self.target_center;
         }
 
-        if moving {
-            self.clamp_center(viewport);
-        }
+        // A stationary camera still needs clamping after restored window
+        // geometry or a new live-preview layout changes its bounds.
+        self.clamp_center(viewport);
 
         moving
     }
@@ -229,6 +240,32 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stationary_camera_fills_restored_viewport_after_preview_replacement() {
+        let mut camera = Camera::new(egui::pos2(0.5, 0.35), 1.0);
+        camera.reset(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 0.7)));
+        for height in [12.0, 700.0, 920.0, 360.0, 700.0] {
+            let vp = egui::Rect::from_min_size(egui::pos2(8.0, 72.0), egui::vec2(1000.0, height));
+            let world = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, height / 1000.0));
+            camera.set_world_rect(world);
+            camera.tick(1.0 / 60.0, vp);
+            let drawn = camera.world_to_screen(world, vp);
+            assert!((drawn.min.y - vp.min.y).abs() < 0.01, "gap after restore: {drawn:?} vs {vp:?}");
+            assert!((drawn.max.y - vp.max.y).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn resized_zoomed_camera_keeps_relative_position_and_animation_origin() {
+        let mut camera = Camera::new(egui::pos2(0.5, 0.3), 4.0);
+        camera.set_world_rect(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 0.6)));
+        let before = camera.center.y / camera.world_rect.height();
+        camera.set_world_rect(egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 0.9)));
+        assert!((camera.center.y / camera.world_rect.height() - before).abs() < 0.00001);
+        assert_eq!(camera.zoom, 4.0);
+        assert_eq!(camera.anim_start_center, camera.center);
+    }
 
     /// Exponential smoothing must converge identically regardless of frame
     /// rate: error decays as exp(-RATE * total_time) whatever the dt steps.

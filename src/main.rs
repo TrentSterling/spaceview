@@ -66,7 +66,8 @@ fn main() -> eframe::Result<()> {
         let seconds = stress::parse_flag_f32(&args, "--probe-seconds").unwrap_or(5.0);
         gauntlet::scan_probe(&path, &dir, seconds,
             !args.iter().any(|arg| arg == "--probe-without-cache"),
-            !args.iter().any(|arg| arg == "--probe-without-previews"));
+            !args.iter().any(|arg| arg == "--probe-without-previews"),
+            stress::parse_flag_usize(&args, "--probe-files").unwrap_or(0) as u64);
         return Ok(());
     }
     let synthetic_n = stress::parse_flag_usize(&args, "--synthetic");
