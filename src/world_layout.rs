@@ -168,10 +168,19 @@ fn layout_children(
         .iter()
         .map(|&i| file_node.children[i].size as f64)
         .collect();
+    // Live previews carry full totals but bounded detail. Account for omitted
+    // bytes explicitly instead of making the retained files look oversized.
+    let represented_size: u64 = file_node.children.iter().map(|c| c.size).sum();
+    let pending_size = file_node.size.saturating_sub(represented_size);
+    let represented_files: u64 = file_node.children.iter()
+        .map(|c| if c.is_dir { c.file_count } else { 1 }).sum();
+    let pending_files = file_node.file_count.saturating_sub(represented_files);
+    agg_size += pending_size;
+    agg_files += pending_files;
     // Keep the aggregate even at size 0 (all-zero-byte tail): it gets a
     // zero-area rect like any zero-size child, so the capped items are never
     // silently unrepresented.
-    let has_agg = agg_items > 0;
+    let has_agg = agg_items > 0 || pending_size > 0;
     if has_agg {
         sizes.push(agg_size as f64);
     }
@@ -218,7 +227,8 @@ fn layout_children(
             nodes.push(LayoutNode {
                 world_rect,
                 depth,
-                name: format!("+{} more", agg_items),
+                name: if pending_size > 0 { format!("+{} files (scan preview)", agg_files) }
+                    else { format!("+{} more", agg_items) },
                 size: agg_size,
                 file_count: agg_files,
                 is_dir: false,
@@ -367,6 +377,20 @@ fn ancestor_chain_recursive<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_preview_aggregate_preserves_area_and_has_no_file_actions() {
+        let mut root = dir("root", vec![file("visible", 100)]);
+        root.size = 1000;
+        root.file_count = 10;
+        let wl = WorldLayout::new(&root, 0.7);
+        let agg = wl.root_nodes.iter().find(|n| n.is_aggregate).unwrap();
+        assert_eq!(agg.size, 900);
+        assert_eq!(agg.file_count, 9);
+        assert_eq!(agg.child_index, AGGREGATE_INDEX);
+        let area = agg.world_rect.area() / wl.world_rect.area();
+        assert!((area - 0.9).abs() < 0.001);
+    }
     use crate::camera::Camera;
     use std::path::PathBuf;
 

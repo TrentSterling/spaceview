@@ -40,7 +40,8 @@
 ## Features
 
 - **Treemap Visualization.** Squarified layout shows files and folders as proportionally-sized rectangles. Vivid SpaceMonger-style colors. Cushion shading for 3D depth.
-- **Live Scan.** Treemap builds progressively as directories are discovered. Pause, resume, cancel. Drag-and-drop folders.
+- **Live Scan.** See the first discovered file immediately, then previews about every 250 ms while large folders are still scanning. Pause, resume, cancel. Drag-and-drop folders.
+- **Readable UI.** Protected text surfaces, visible button outlines, larger treemap labels, and stronger dark/light contrast across gradients and interaction states.
 - **5 View Modes.** Map (treemap), List (sortable directory browser), Top Files (1000 largest), Types (extension treemap), Duplicates. Switch instantly via tabs.
 - **Drive Picker.** Visual drive cards with capacity bars on the welcome screen. Click any drive to scan. Toolbar button opens the picker anytime.
 - **Extension Breakdown Panel.** Side panel listing every file type by size. Click an extension to highlight matching files in the treemap. Everything else dims.
@@ -49,7 +50,7 @@
 - **Search/Filter.** Find files by name or path across List, Top Files, Duplicates, and the extension panel.
 - **Right-Click Context Menu.** Open in Explorer, Copy Path, Delete to Recycle Bin. Works in all views.
 - **Rich Tooltips.** Hover any block for name, size, percentage, file count, and full path.
-- **Built for huge drives.** Folder layouts are computed once and cached, the whole treemap draws as a single batched mesh, and memory is hard-capped. Multi-million-file scans stay smooth.
+- **Built for large drives.** Folder layouts are cached, the treemap uses a batched mesh, and visible directory expansion has a 250,000-node budget.
 - **Portable.** One ~7 MB .exe. No installer, no runtime dependencies. Download, run, delete to uninstall.
 
 ## Quick Start
@@ -69,6 +70,18 @@ cargo build --release
 The binary will be at `target/release/spaceview.exe`.
 
 **Requirements:** [Rust](https://rustup.rs/) (edition 2021)
+
+### Test Gauntlet
+
+```powershell
+./tools/gauntlet.ps1 -LivePath 'C:/path/to/a/large/folder'
+```
+
+Runs Rust regressions, builds the release EXE, captures native UI states at two
+window sizes, checks live scan growth/pause/resume/cancel, and exercises a
+500,000-file synthetic scan. Inspect the saved screenshots after the run.
+See [the gauntlet guide](docs/GAUNTLET.md) and
+[v0.15.3 validation](docs/QA-2026-10-01.md).
 
 ## Navigation
 
@@ -95,6 +108,8 @@ src/
   app.rs           Main UI: rendering, hit testing, input, themes, drive picker, extension panel
   camera.rs        Bounded camera with smooth zoom/pan/snap animations
   scanner.rs       Recursive directory scanner with progress tracking and live snapshots
+  contrast.rs      Text, outline, surface and gradient-compositing protection
+  gauntlet.rs      Real scan timing probe and native live scan capture support
   world_layout.rs  Lazy LOD layout tree: expand/prune on demand, cached layouts, node budget
   treemap.rs       Squarified treemap algorithm (Bruls et al.)
   stress.rs        Perf harness: --synthetic N fake tree + --stress S scripted camera thrash
@@ -105,7 +120,7 @@ src/
 - One batched mesh. All fills, borders, and headers accumulate into a single vertex-colored mesh per frame; text draws on top.
 - Lazy level-of-detail. Only expand visible directories, prune off-screen ones, cap expansion at 2048 children per folder with a global 250k node budget.
 - Bounded camera. Zoom clamped to [1x, 5000x], pan clamped to world bounds, frame-rate-independent smoothing.
-- Live scanning. Partial tree snapshots streamed via mpsc channel, throttled to 2/sec.
+- Live scanning. The first discovered file publishes immediately, followed by bounded previews about four times per second inside unfinished folders. A single queued preview prevents backlog; the final tree retains full detail.
 - Deferred drops. Old trees freed on background thread to prevent UI stalls.
 - Crash visibility. Panics write to `%APPDATA%/SpaceView/panic.log` with a backtrace.
 

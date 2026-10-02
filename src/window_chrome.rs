@@ -45,6 +45,11 @@ pub fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
         };
         ui.painter().rect_filled(rect, 4.0, fill);
     }
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_stroke(rect.shrink(1.0), 4.0,
+            Stroke::new(1.2, crate::contrast::outline(ui.visuals().hyperlink_color, crate::theme::t().dark)),
+            StrokeKind::Inside);
+    }
     let glyph = if resp.hovered() && kind == WinBtn::Close {
         Color32::WHITE
     } else {

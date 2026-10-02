@@ -24,3 +24,4 @@ verify_shots/
 
 # scripted screenshot output (--shots)
 tools/shots/
+/test-results/

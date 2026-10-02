@@ -21,6 +21,7 @@ use std::sync::{LazyLock, RwLock};
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
 use crate::color::{self, Rgb};
+use crate::contrast;
 
 // ---- tokens ---------------------------------------------------------------
 
@@ -87,6 +88,11 @@ pub fn set_theme(ctx: &egui::Context, tk: Tokens, gradient: bool) {
     ctx.style_mut(|s| s.interaction.selectable_labels = false);
 }
 
+pub fn panel_alpha(dark: bool, gradient: bool) -> u8 {
+    if !gradient { 255 }
+    else { ((if dark { 255.0 } else { 200.0 }) * frost(dark)) as u8 }
+}
+
 /// egui Visuals derived entirely from the given tokens. `gradient` controls
 /// panel/window fill translucency (~0.90 alpha) so the background wash reads
 /// through the chrome; off keeps fills fully solid (the flat pre-gradient
@@ -115,12 +121,7 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // Light frost is remapped so the WHOLE slider travel is responsive: white
     // above ~78% opacity is perceptually identical full-bleach (Trent: "works
     // only at the lower values"), so light's 100% maps to 200/255 instead.
-    let f = frost(tk.dark);
-    let panel_alpha: u8 = if gradient {
-        if tk.dark { (255.0 * f) as u8 } else { (200.0 * f) as u8 }
-    } else {
-        255
-    };
+    let panel_alpha = panel_alpha(tk.dark, gradient);
     let panel = Color32::from_rgba_unmultiplied(tk.panel.r(), tk.panel.g(), tk.panel.b(), panel_alpha);
 
     // Floating windows (About, dialogs, the gradient editor) carry paragraphs
@@ -163,7 +164,8 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // FROM THE FILL ACTUALLY DRAWN, so it stays readable for any accent.
     // Built from the READABLE accent (ladder step 9), never the verbatim pick —
     // a selected row has to host text, so it can't be whatever the user chose.
-    let sel_fill = color::mix_colors(rgb_of(tk.accent_readable), rgb_of(tk.bg), 0.30);
+    let sel_fill = rgb_of(contrast::surface(
+        contrast::mix(tk.accent_readable, tk.bg, 0.30), tk.dark));
     v.selection.bg_fill = c32(sel_fill);
     // And the selected label is chosen by APCA against the fill ACTUALLY drawn,
     // from the theme's own extremes — not a luminance-threshold guess.
@@ -180,11 +182,7 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     // Semantic red keeps its MEANING (danger reads as danger regardless of the
     // theme's hue) but not its washout: a hardcoded literal is the one thing the
     // tonal ladder never sees, so walk it against the panel it is drawn on.
-    v.error_fg_color = c32(color::readable_against(
-        [220, 80, 60],
-        rgb_of(tk.panel),
-        color::LC_MUTED,
-    ));
+    v.error_fg_color = contrast::ink(Color32::from_rgb(220, 80, 60), tk.dark);
 
     let r = corner_radius();
     let txt = Stroke::new(1.0, tk.text);
@@ -197,14 +195,14 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     w.corner_radius = r;
 
     let w = &mut v.widgets.inactive;
-    w.bg_fill = tk.hover.gamma_multiply(0.6);
-    w.weak_bg_fill = tk.hover.gamma_multiply(0.6);
+    w.bg_fill = tk.hover;
+    w.weak_bg_fill = tk.hover;
     // Resting buttons need a VISIBLE outline, not just a hover reveal (Trent:
     // "when I dont hover the button I dont really see the button") — edge
     // pulled toward text so it reads on any tinted ground.
     w.bg_stroke = Stroke::new(
-        1.0,
-        c32(color::mix_colors(rgb_of(tk.edge), rgb_of(tk.text), 0.30)),
+        1.2,
+        contrast::outline(tk.edge, tk.dark),
     );
     w.fg_stroke = txt;
     w.corner_radius = r;
@@ -212,7 +210,7 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     let w = &mut v.widgets.hovered;
     w.bg_fill = tk.hover;
     w.weak_bg_fill = tk.hover;
-    w.bg_stroke = Stroke::new(1.2, tk.accent_readable);
+    w.bg_stroke = Stroke::new(1.2, contrast::outline(tk.accent_readable, tk.dark));
     w.fg_stroke = Stroke::new(1.5, tk.text);
     w.corner_radius = r;
     w.expansion = 1.0;
@@ -229,9 +227,9 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
         guard += 1;
     }
     let w = &mut v.widgets.active;
-    w.bg_fill = c32(active_fill);
-    w.weak_bg_fill = tk.accent_dim;
-    w.bg_stroke = Stroke::new(1.0, tk.accent_readable);
+    w.bg_fill = contrast::surface(c32(active_fill), tk.dark);
+    w.weak_bg_fill = contrast::surface(tk.accent_dim, tk.dark);
+    w.bg_stroke = Stroke::new(1.2, contrast::outline(tk.accent_readable, tk.dark));
     // Pressed Checkbox/SelectableLabel/RadioButton text paints over the dark
     // panel (not bg_fill), so this stays `text`, not `on_accent` — otherwise
     // it goes dark-on-dark on a dark ground.
@@ -242,7 +240,7 @@ pub fn build_visuals(tk: Tokens, gradient: bool) -> egui::Visuals {
     let w = &mut v.widgets.open;
     w.bg_fill = tk.hover;
     w.weak_bg_fill = tk.hover;
-    w.bg_stroke = Stroke::new(1.0, tk.accent_dim);
+    w.bg_stroke = Stroke::new(1.2, contrast::outline(tk.accent_readable, tk.dark));
     w.fg_stroke = txt;
     w.corner_radius = r;
 
@@ -274,20 +272,20 @@ pub fn auto_theme(seeds: &[Rgb], dark: bool) -> Tokens {
     let (bg, panel) = if dark { (sc.step(1), sc.step(2)) } else { (sc.step(2), sc.step(1)) };
     Tokens {
         dark,
-        bg: c32(bg),
-        panel: c32(panel),
-        text: c32(sc.step(12)),
-        muted: c32(sc.step(11)),
+        bg: contrast::surface(c32(bg), dark),
+        panel: contrast::surface(c32(panel), dark),
+        text: contrast::ink(c32(sc.step(12)), dark),
+        muted: contrast::ink(c32(sc.step(11)), dark),
         // The pick stays VERBATIM — black is allowed to be black. Only the
         // *derived* roles come off the guaranteed ladder.
         accent: c32(seed),
-        accent_readable: c32(sc.step(9)),
-        accent_dim: c32(color::mix_colors(sc.step(9), sc.step(1), 0.45)),
+        accent_readable: contrast::ink(c32(sc.step(9)), dark),
+        accent_dim: contrast::surface(c32(color::mix_colors(sc.step(9), sc.step(1), 0.45)), dark),
         // Text on the accent is chosen by APCA against what is ACTUALLY drawn,
         // so even a midtone pick gets a label that reads.
         on_accent: c32(color::on_color(seed, &sc)),
-        edge: c32(sc.step(6)),
-        hover: c32(sc.step(4)),
+        edge: contrast::outline(c32(sc.step(6)), dark),
+        hover: contrast::surface(c32(sc.step(4)), dark),
     }
 }
 
@@ -303,6 +301,26 @@ mod auto_theme_tests {
 
     fn lc(a: Color32, b: Color32) -> f32 {
         color::apca_abs(rgb_of(a), rgb_of(b))
+    }
+
+    #[test]
+    fn actual_widget_states_have_strong_ink_and_visible_outlines() {
+        for dark in [false, true] {
+            for seed in [[0,0,0], [255,255,255], [128,128,128], [255,255,0],
+                [180,40,255], [25,240,180], HOUSE_SEED] {
+                let tk = from_accent(seed, dark);
+                let v = build_visuals(tk, false);
+                for w in [&v.widgets.inactive, &v.widgets.hovered, &v.widgets.active, &v.widgets.open] {
+                    assert!(contrast::ratio(w.fg_stroke.color, w.bg_fill) >= 7.0);
+                    assert!(contrast::ratio(w.bg_stroke.color, w.bg_fill) >= 3.0);
+                    assert!(contrast::ratio(w.bg_stroke.color, tk.panel) >= 3.0);
+                    assert_eq!(w.bg_stroke.width, 1.2, "state changes must keep button geometry stable");
+                }
+                assert!(contrast::ratio(v.selection.stroke.color, v.selection.bg_fill) >= 7.0);
+                assert!(contrast::ratio(tk.muted, tk.panel) >= 7.0);
+                assert!(contrast::ratio(tk.accent_readable, tk.panel) >= 7.0);
+            }
+        }
     }
 
     /// Every token set the app can produce must be readable on its own grounds —
@@ -659,7 +677,8 @@ pub fn paint_gradient(ctx: &egui::Context, tk: &Tokens) {
             );
             let t = (((p.x - c.x) * dx + (p.y - c.y) * dy) / half) * 0.5 + 0.5;
             let col = color::mix_colors(bg, ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0));
-            mesh.colored_vertex(p, c32(col));
+            mesh.colored_vertex(p, contrast::backdrop(c32(col), tk.panel,
+                panel_alpha(tk.dark, true), tk.dark));
         }
     }
     let w = (N + 1) as u32;
@@ -679,14 +698,14 @@ pub fn paint_gradient(ctx: &egui::Context, tk: &Tokens) {
 pub fn ramp_sample(tk: &Tokens, t: f32) -> Color32 {
     let cfg = gradient_cfg();
     let pegs = gradient_pegs(tk);
-    c32(color::mix_colors(rgb_of(tk.bg), ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0)))
+    contrast::backdrop(c32(color::mix_colors(rgb_of(tk.bg), ramp(&pegs, t),
+        cfg.intensity.clamp(0.0, 1.0))), tk.panel, panel_alpha(tk.dark, true), tk.dark)
 }
 
 /// The wash as actually PERCEIVED through the current frost (panel compositing
 /// included) — so the editor preview can show reality, not just the raw ramp.
 pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
     let wash = ramp_sample(tk, t);
-    let f = frost(tk.dark);
-    let alpha = if tk.dark { f } else { f * (200.0 / 255.0) };
+    let alpha = panel_alpha(tk.dark, true) as f32 / 255.0;
     c32(color::mix_colors(rgb_of(wash), rgb_of(tk.panel), alpha))
 }

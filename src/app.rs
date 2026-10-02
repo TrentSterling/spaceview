@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 const ZOOM_FRAME_WIDTH: f32 = 4.0;
 const MIN_SCREEN_PX: f32 = 2.0;
-const HEADER_PX: f32 = 16.0;
+const HEADER_PX: f32 = 20.0;
 const PAD_PX: f32 = 3.0;
 const BORDER_PX: f32 = 1.5;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -128,6 +128,9 @@ pub struct Prefs {
 }
 
 pub fn prefs_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("SPACEVIEW_PREFS_DIR") {
+        return Some(PathBuf::from(dir).join("prefs.txt"));
+    }
     std::env::var("APPDATA").ok().map(|appdata| {
         PathBuf::from(appdata).join("SpaceView").join("prefs.txt")
     })
@@ -241,6 +244,7 @@ pub struct SpaceViewApp {
     // Camera + layout
     camera: Camera,
     world_layout: Option<WorldLayout>,
+    reset_camera_on_layout: bool,
     last_viewport: egui::Rect,
 
     // Interaction
@@ -320,6 +324,7 @@ pub struct SpaceViewApp {
     metrics: Option<crate::stress::MetricsLogger>,
     // Scripted screenshots (only active with --shots DIR)
     shots: Option<crate::shots::ShotScript>,
+    live_shots: Option<crate::gauntlet::LiveScript>,
     shots_anonymize_pending: bool,
 }
 
@@ -480,6 +485,7 @@ impl SpaceViewApp {
             snapshot_receiver: None,
             camera: Camera::new(egui::pos2(0.5, 0.5), 1.0),
             world_layout: None,
+            reset_camera_on_layout: true,
             last_viewport: egui::Rect::NOTHING,
             hovered_node_info: None,
             context_menu_info: None,
@@ -525,6 +531,7 @@ impl SpaceViewApp {
             cached_drives: Vec::new(),
             stress: None,
             shots: None,
+            live_shots: None,
             shots_anonymize_pending: false,
             metrics: None,
         }
@@ -585,6 +592,84 @@ impl SpaceViewApp {
         self.shots = Some(crate::shots::ShotScript::new(dir));
     }
 
+    pub fn open_scan(&mut self, path: PathBuf) {
+        self.show_about = false;
+        self.start_scan(path);
+    }
+
+    pub fn configure_live_shots(&mut self, dir: PathBuf, path: PathBuf) {
+        self.open_scan(path);
+        self.show_free_space = false;
+        self.live_shots = Some(crate::gauntlet::LiveScript::new(dir));
+    }
+
+    fn drive_live_shots(&mut self, ctx: &egui::Context) {
+        use std::time::Duration;
+        let Some(mut script) = self.live_shots.take() else { return };
+        assert!(script.entered.elapsed() < Duration::from_secs(20), "live screenshot stage timed out");
+        let progress = self.scan_progress.as_ref().expect("live scan progress");
+        let files = progress.files_scanned.load(Ordering::Relaxed);
+        let preview_files = self.scan_root.as_ref().map(|r| r.file_count).unwrap_or(0);
+        let image = ctx.input(|i| i.events.iter().find_map(|e| match e {
+            egui::Event::Screenshot { image, .. } => Some(image.clone()), _ => None,
+        }));
+        if let Some(image) = image {
+            let file = crate::gauntlet::LIVE_FILES[script.stage];
+            crate::shots::save_png(&script.dir.join(file), &image).expect("save live screenshot");
+            script.record(format!("PASS {file}: worker_files={files} preview_files={preview_files} scanning={} elapsed_ms={:.1}",
+                self.scanning, progress.scan_start.elapsed().as_secs_f64() * 1000.0));
+            if script.stage == 0 { script.first_files = preview_files; }
+            script.stage += 1;
+            script.entered = std::time::Instant::now();
+            script.initialized = false;
+            script.pending = false;
+            if script.stage == crate::gauntlet::LIVE_FILES.len() {
+                script.record("COMPLETE native live scan checks passed".into());
+                std::process::exit(0);
+            }
+        }
+        match script.stage {
+            0 => {
+                if preview_files > 0 && self.scanning { script.capture(ctx); }
+            }
+            1 => {
+                assert!(self.scanning, "live test folder finished too soon; choose a larger --scan path");
+                if script.entered.elapsed() > Duration::from_millis(1000)
+                    && preview_files > script.first_files { script.capture(ctx); }
+            }
+            2 => {
+                if !script.initialized {
+                    progress.paused.store(true, Ordering::Relaxed);
+                    script.initialized = true;
+                }
+                if !script.pause_settled && script.entered.elapsed() > Duration::from_millis(150) {
+                    script.paused_files = files;
+                    script.pause_settled = true;
+                }
+                if script.entered.elapsed() > Duration::from_millis(450) {
+                    assert_eq!(files, script.paused_files, "paused scan kept traversing");
+                    assert!(self.scanning);
+                    script.capture(ctx);
+                }
+            }
+            3 => {
+                progress.paused.store(false, Ordering::Relaxed);
+                if script.entered.elapsed() > Duration::from_millis(500)
+                    && files > script.paused_files && preview_files > script.first_files {
+                    assert!(self.scanning);
+                    script.capture(ctx);
+                }
+            }
+            4 => {
+                progress.cancel.store(true, Ordering::Relaxed);
+                if !self.scanning && self.scan_root.is_none() { script.capture(ctx); }
+            }
+            _ => unreachable!(),
+        }
+        self.live_shots = Some(script);
+        ctx.request_repaint();
+    }
+
     /// One frame of the screenshot script: apply the step's theme, view and
     /// color mode on its first frame, let the layout settle, ask the viewport
     /// for a screenshot, save it when the event comes back, advance, and exit
@@ -628,9 +713,30 @@ impl SpaceViewApp {
         }
         let shot = &shots[idx];
         if frames == 0 {
-            self.show_about = false;
+            use crate::shots::ShotState;
+            if shot.state == ShotState::Welcome {
+                if self.scan_root.is_some() {
+                    self.shots.as_mut().unwrap().saved_tree = self.scan_root.take();
+                }
+                self.world_layout = None;
+            } else if self.scan_root.is_none() {
+                self.scan_root = self.shots.as_mut().unwrap().saved_tree.take();
+                self.world_layout = None;
+                self.reset_camera_on_layout = true;
+            }
+            self.show_about = shot.state == ShotState::About;
             self.hide_about_on_start = true;
-            self.show_gradient_editor = false;
+            self.show_gradient_editor = shot.state == ShotState::Editor;
+            self.selected_extension = if shot.state == ShotState::Filter {
+                self.cached_extensions.as_ref().and_then(|exts| exts.first()).map(|ext| ext.0.clone())
+            } else { None };
+            if shot.view == 4 && self.shots_anonymize_pending == false {
+                // Screenshot-only duplicate fixtures, never scanned or opened.
+                self.cached_duplicates = Some(vec![DuplicateGroup { size: 8_388_608,
+                    paths: vec![r"V:\Fixture\Photos\capture.png".into(),
+                        r"V:\Fixture\Backup\capture.png".into()] }]);
+            }
+            ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
             self.gradient = true;
             self.dark_mode = shot.dark;
             let mut cfg = theme::gradient_cfg();
@@ -670,6 +776,13 @@ impl SpaceViewApp {
         }
         let mut next_pending = pending;
         if frames == crate::shots::SETTLE_FRAMES && !pending {
+            let state = self.shots.as_ref().unwrap().button_state;
+            match shot.state {
+                crate::shots::ShotState::Hover => assert!(state[0], "button hover was not exercised"),
+                crate::shots::ShotState::Press => assert!(state[1], "button press was not exercised"),
+                crate::shots::ShotState::Focus => assert!(state[2], "button keyboard focus was not exercised"),
+                _ => {}
+            }
             next_pending = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
@@ -684,7 +797,7 @@ impl SpaceViewApp {
             let path = dir.join(shot.file);
             match crate::shots::save_png(&path, &img) {
                 Ok(()) => eprintln!("[shots] wrote {} ({}x{})", path.display(), img.width(), img.height()),
-                Err(e) => eprintln!("[shots] FAILED {}: {}", path.display(), e),
+                Err(e) => panic!("[shots] FAILED {}: {}", path.display(), e),
             }
             advance = true;
         }
@@ -731,6 +844,7 @@ impl SpaceViewApp {
         }
 
         self.camera = Camera::new(egui::pos2(0.5, 0.5), 1.0);
+        self.reset_camera_on_layout = true;
         self.scanning = true;
         self.view_mode = ViewMode::Treemap;
         self.depth_context.clear();
@@ -749,7 +863,7 @@ impl SpaceViewApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.scan_receiver = Some(rx);
 
-        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::sync_channel(1);
         self.snapshot_receiver = Some(snapshot_rx);
 
         std::thread::spawn(move || {
@@ -802,7 +916,10 @@ impl SpaceViewApp {
 
             let aspect = viewport.height() / viewport.width();
             let layout = WorldLayout::new(root, aspect);
-            self.camera.reset(layout.world_rect);
+            if self.reset_camera_on_layout {
+                self.camera.reset(layout.world_rect);
+                self.reset_camera_on_layout = false;
+            }
             self.camera.set_world_rect(layout.world_rect);
             self.world_layout = Some(layout);
             self.root_name = root.name.clone();
@@ -890,6 +1007,21 @@ fn load_image_from_png(ctx: &egui::Context, name: &str, png_data: &[u8]) -> egui
 }
 
 impl eframe::App for SpaceViewApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        if let Some(script) = self.shots.as_ref() {
+            input.focused = true;
+            let state = crate::shots::SHOTS.get(script.idx).map(|s| s.state);
+            let pointer = if matches!(state, Some(crate::shots::ShotState::Hover
+                | crate::shots::ShotState::Press | crate::shots::ShotState::Tooltip)) {
+                script.pointer
+            } else { egui::pos2(4.0, 500.0) };
+            input.events.push(egui::Event::PointerMoved(pointer));
+            input.events.push(egui::Event::PointerButton { pos: pointer,
+                button: egui::PointerButton::Primary,
+                pressed: state == Some(crate::shots::ShotState::Press),
+                modifiers: egui::Modifiers::NONE });
+        }
+    }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Chrome theme (colormagic tokens, house style) + Discord-style
         // background wash. Tokens live in `theme::CURRENT`; dark/light and
@@ -978,8 +1110,12 @@ impl eframe::App for SpaceViewApp {
                     latest = Some(snapshot);
                 }
                 if let Some(tree) = latest {
+                    let old_root = self.scan_root.take();
+                    let old_layout = self.world_layout.take();
+                    if old_root.is_some() || old_layout.is_some() {
+                        std::thread::spawn(move || drop((old_root, old_layout)));
+                    }
                     self.scan_root = Some(tree);
-                    self.world_layout = None; // Force layout rebuild
                     self.invalidate_tree_references();
                 }
             }
@@ -1018,6 +1154,11 @@ impl eframe::App for SpaceViewApp {
                 }
             }
             ctx.request_repaint();
+        }
+
+        // Check for duplicate detection result
+        if self.live_shots.is_some() {
+            self.drive_live_shots(ctx);
         }
 
         // Check for duplicate detection result
@@ -1235,7 +1376,7 @@ impl eframe::App for SpaceViewApp {
                             });
                             ui.horizontal(|ui| {
                                 let kind_label = if drive.is_removable { "Removable" } else { &drive.kind };
-                                ui.weak(format!("{} - {}", kind_label, drive.filesystem));
+                                ui.label(egui::RichText::new(format!("{} - {}", kind_label, drive.filesystem)).color(theme::t().muted));
                             });
                             // Capacity bar
                             let bar_height = 14.0;
@@ -1298,7 +1439,9 @@ impl eframe::App for SpaceViewApp {
             ));
         }
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            let toolbar_width = (ui.available_width() - window_chrome::CAPTION_W).max(160.0);
+            ui.allocate_ui_with_layout(egui::vec2(toolbar_width, 0.0),
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
                 // Icon + wordmark double as a window drag handle (custom chrome:
                 // no OS title bar), so a packed toolbar always has a grab point.
                 if let Some(ref tex) = self.icon_texture {
@@ -1318,7 +1461,20 @@ impl eframe::App for SpaceViewApp {
                 window_chrome::drag_window(ctx, &wm);
                 ui.separator();
 
-                if ui.button("Open Folder...").clicked() {
+                let open_folder = ui.button("Open Folder...");
+                if let Some(script) = self.shots.as_mut() {
+                    if let Some(shot) = crate::shots::SHOTS.get(script.idx) {
+                        match shot.state {
+                            crate::shots::ShotState::Hover | crate::shots::ShotState::Press => {
+                                script.pointer = open_folder.rect.center();
+                            }
+                            crate::shots::ShotState::Focus => open_folder.request_focus(),
+                            _ => {}
+                        }
+                    }
+                    script.button_state = [open_folder.hovered(), open_folder.is_pointer_button_down_on(), open_folder.has_focus()];
+                }
+                if open_folder.clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.start_scan(path);
                     }
@@ -1330,45 +1486,7 @@ impl eframe::App for SpaceViewApp {
                     self.show_drive_picker = !self.show_drive_picker;
                 }
 
-                if self.scanning {
-                    ui.separator();
-                    ui.spinner();
-                    if let Some(ref prog) = self.scan_progress {
-                        let files = prog.files_scanned.load(Ordering::Relaxed);
-                        let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
-                        let elapsed = prog.scan_start.elapsed().as_secs_f64();
-                        let rate = if elapsed > 0.5 {
-                            files as f64 / elapsed
-                        } else {
-                            0.0
-                        };
-                        let mut text = format!(
-                            "Scanning... {} files, {}",
-                            format_count(files),
-                            format_size(bytes),
-                        );
-                        if elapsed >= 1.0 {
-                            text += &format!(
-                                " - {} ({}/sec)",
-                                format_duration(elapsed),
-                                format_count(rate as u64),
-                            );
-                        }
-                        ui.label(text);
-                    }
-                    if let Some(ref prog) = self.scan_progress {
-                        let is_paused = prog.paused.load(Ordering::Relaxed);
-                        let pause_label = if is_paused { "Resume" } else { "Pause" };
-                        if ui.button(pause_label).clicked() {
-                            prog.paused.store(!is_paused, Ordering::Relaxed);
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        if let Some(ref prog) = self.scan_progress {
-                            prog.cancel.store(true, Ordering::Relaxed);
-                        }
-                    }
-                }
+
 
                 // Theme selector + dark/light toggle (show when not scanning or when we have live data)
                 if !self.scanning || self.scan_root.is_some() {
@@ -1899,8 +2017,59 @@ impl eframe::App for SpaceViewApp {
                     }
                 }
 
-                // View mode tabs (only when scan is complete, since List/TopFiles need final data)
-                if self.scan_root.is_some() && !self.scanning {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("About").clicked() { self.show_about = !self.show_about; }
+                    let gap = ui.available_rect_before_wrap();
+                    window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
+                });
+            });
+
+            // Keep view/scan controls on their own row. They must never compete
+            // with the caption buttons or draw over other toolbar controls.
+            if self.scanning {
+                ui.horizontal_wrapped(|ui| {
+                    ui.separator();
+                    ui.spinner();
+                    if let Some(ref prog) = self.scan_progress {
+                        let files = prog.files_scanned.load(Ordering::Relaxed);
+                        let bytes = prog.bytes_scanned.load(Ordering::Relaxed);
+                        let elapsed = prog.scan_start.elapsed().as_secs_f64();
+                        let rate = if elapsed > 0.5 {
+                            files as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+                        let mut text = format!(
+                            "Scanning... {} files, {}",
+                            format_count(files),
+                            format_size(bytes),
+                        );
+                        if elapsed >= 1.0 {
+                            text += &format!(
+                                " - {} ({}/sec)",
+                                format_duration(elapsed),
+                                format_count(rate as u64),
+                            );
+                        }
+                        ui.label(text);
+                    }
+                    if let Some(ref prog) = self.scan_progress {
+                        let is_paused = prog.paused.load(Ordering::Relaxed);
+                        let pause_label = if is_paused { "Resume" } else { "Pause" };
+                        if ui.button(pause_label).clicked() {
+                            prog.paused.store(!is_paused, Ordering::Relaxed);
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        if let Some(ref prog) = self.scan_progress {
+                            prog.cancel.store(true, Ordering::Relaxed);
+                        }
+                    }
+
+                });
+            }
+            if self.scan_root.is_some() && !self.scanning {
+                ui.horizontal_wrapped(|ui| {
                     ui.separator();
                     ui.selectable_value(&mut self.view_mode, ViewMode::Treemap, "Map");
                     ui.selectable_value(&mut self.view_mode, ViewMode::List, "List");
@@ -1914,23 +2083,10 @@ impl eframe::App for SpaceViewApp {
                         "Dupes"
                     };
                     ui.selectable_value(&mut self.view_mode, ViewMode::Duplicates, dup_label);
-                }
-
-                // Right-aligned About button + Free Space toggle. FIRST reserve
-                // the caption overlay's footprint (min/max/close float on top in
-                // window_chrome::caption_overlay) so About + search sit left of
-                // it — a second right_to_left block gets ZERO width here because
-                // this one is already flush against the panel edge (review
-                // finding, verified against egui 0.31 internals).
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(window_chrome::CAPTION_W);
-                    if ui.button("About").clicked() {
-                        self.show_about = !self.show_about;
-                    }
-                    if self.scan_root.is_some() && !self.scanning {
+                                    if self.scan_root.is_some() && !self.scanning {
                         ui.add(egui::TextEdit::singleline(&mut self.search_text)
                             .hint_text("Search...")
-                            .desired_width(120.0));
+                            .desired_width(160.0));
                     }
                     if self.scan_root.is_some() && !self.scanning {
                         if self.cached_extensions.is_some() {
@@ -1959,12 +2115,9 @@ impl eframe::App for SpaceViewApp {
                             self.invalidate_tree_references();
                         }
                     }
-                    // Whatever width remains between the left-side controls and
-                    // this right-aligned group is the window drag strip.
-                    let gap = ui.available_rect_before_wrap();
-                    window_chrome::drag_region(ui, gap, "toolbar-drag-gap");
+
                 });
-            });
+            }
 
             // Breadcrumb bar
             if self.scan_root.is_some() {
@@ -2086,11 +2239,11 @@ impl eframe::App for SpaceViewApp {
 
                     if self.color_mode == ColorMode::Age {
                         ui.separator();
-                        ui.colored_label(egui::Color32::from_rgb(220, 60, 50), "Old");
+                        ui.colored_label(crate::contrast::ink(egui::Color32::from_rgb(220, 60, 50), theme::t().dark), "Old");
                         ui.label("-");
-                        ui.colored_label(egui::Color32::from_rgb(220, 220, 50), "Mid");
+                        ui.colored_label(crate::contrast::ink(egui::Color32::from_rgb(220, 220, 50), theme::t().dark), "Mid");
                         ui.label("-");
-                        ui.colored_label(egui::Color32::from_rgb(60, 220, 80), "New");
+                        ui.colored_label(crate::contrast::ink(egui::Color32::from_rgb(60, 220, 80), theme::t().dark), "New");
                     }
                     if self.color_mode == ColorMode::Extension {
                         ui.separator();
@@ -2218,7 +2371,7 @@ impl eframe::App for SpaceViewApp {
                                 ui.heading(heading);
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     let kind_label = if drive.is_removable { "Removable" } else { &drive.kind };
-                                    ui.weak(format!("{} - {}", kind_label, drive.filesystem));
+                                    ui.label(egui::RichText::new(format!("{} - {}", kind_label, drive.filesystem)).color(theme::t().muted));
                                 });
                             });
                             // Capacity bar
@@ -2516,6 +2669,23 @@ impl eframe::App for SpaceViewApp {
             // Walk the layout tree and draw visible nodes
             if let Some(ref layout) = self.world_layout {
                 render_nodes(&painter, &layout.root_nodes, &self.camera, viewport, theme, self.color_mode, self.time_range, &self.ext_color_map, self.selected_extension.as_deref());
+                if let Some(script) = self.shots.as_mut() {
+                    if crate::shots::SHOTS.get(script.idx).is_some_and(|s|
+                        s.state == crate::shots::ShotState::Tooltip) {
+                        let mut nodes: Vec<&LayoutNode> = layout.root_nodes.iter().collect();
+                        let mut biggest = 0.0;
+                        while let Some(node) = nodes.pop() {
+                            nodes.extend(node.children.iter());
+                            if !node.is_dir && !node.is_aggregate {
+                                let rect = self.camera.world_to_screen(node.world_rect, viewport).intersect(viewport);
+                                if rect.area() > biggest {
+                                    biggest = rect.area();
+                                    script.pointer = rect.center();
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // 5. Hit test for hover (screen-space, skip while dragging)
@@ -2772,7 +2942,7 @@ impl eframe::App for SpaceViewApp {
                                 } else {
                                     theme.base_rgb(depth)
                                 };
-                                let icon_col = egui::Color32::from_rgb(r, g, b);
+                                let icon_col = crate::contrast::ink(egui::Color32::from_rgb(r, g, b), theme::t().dark);
                                 let icon = if *is_dir { "D" } else { "F" };
 
                                 ui.horizontal(|ui| {
@@ -2890,11 +3060,11 @@ impl eframe::App for SpaceViewApp {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                     let w = ui.available_width();
                                     ui.add_sized([w * 0.04, 18.0], egui::Label::new(
-                                        egui::RichText::new(format!("{}", rank + 1)).weak()));
+                                        egui::RichText::new(format!("{}", rank + 1)).color(theme::t().muted)));
                                     ui.add_sized([w * 0.28, 18.0], egui::Label::new(
-                                        egui::RichText::new(&entry.0).color(egui::Color32::from_rgb(r, g, b))));
+                                        egui::RichText::new(&entry.0).color(crate::contrast::ink(egui::Color32::from_rgb(r, g, b), theme::t().dark))));
                                     ui.add_sized([w * 0.38, 18.0], egui::Label::new(
-                                        egui::RichText::new(&entry.2).weak()));
+                                        egui::RichText::new(&entry.2).color(theme::t().muted)));
                                     ui.add_sized([w * 0.15, 18.0], egui::Label::new(format_size(entry.1)));
                                     ui.add_sized([w * 0.10, 18.0], egui::Label::new(format!("{:.1}%", pct)));
                                 });
@@ -2947,32 +3117,29 @@ impl eframe::App for SpaceViewApp {
                             if inner.width() > 40.0 && inner.height() > 18.0 {
                                 let text_clip = inner.intersect(ext_rect);
                                 let text_painter = painter.with_clip_rect(text_clip);
-                                let text_col = text_color_for(col);
                                 let pct = (ext.1 as f64 / total_size as f64) * 100.0;
 
                                 // Extension name
                                 let font_size = (inner.height() * 0.3).clamp(11.0, 24.0);
                                 let max_chars = ((inner.width() - 6.0) / (font_size * 0.55)) as usize;
                                 let label = truncate_str(&ext.0, max_chars);
-                                text_painter.text(
+                                paint_block_label(&text_painter,
                                     inner.min + egui::vec2(4.0, 4.0),
-                                    egui::Align2::LEFT_TOP,
                                     label,
                                     egui::FontId::proportional(font_size),
-                                    text_col,
+                                    col,
                                 );
 
                                 // Size and count
                                 if inner.height() > 36.0 {
                                     let info = format!("{} ({:.1}%, {} files)",
                                         format_size(ext.1), pct, format_count(ext.2));
-                                    let info_size = (font_size * 0.7).clamp(9.0, 14.0);
-                                    text_painter.text(
+                                    let info_size = (font_size * 0.7).clamp(11.0, 14.0);
+                                    paint_block_label(&text_painter,
                                         inner.min + egui::vec2(4.0, font_size + 6.0),
-                                        egui::Align2::LEFT_TOP,
                                         info,
                                         egui::FontId::proportional(info_size),
-                                        text_col.gamma_multiply(0.7),
+                                        col,
                                     );
                                 }
                             }
@@ -3018,7 +3185,7 @@ impl eframe::App for SpaceViewApp {
                                 let waste = group.size * (group.paths.len() as u64 - 1);
                                 let ci = gi % 20;
                                 let (r, g, b) = self.theme.base_rgb(ci);
-                                let col = egui::Color32::from_rgb(r, g, b);
+                                let col = crate::contrast::ink(egui::Color32::from_rgb(r, g, b), theme::t().dark);
 
                                 ui.horizontal(|ui| {
                                     ui.colored_label(col, format!(
@@ -3033,7 +3200,7 @@ impl eframe::App for SpaceViewApp {
                                     ui.horizontal(|ui| {
                                         ui.add_space(16.0);
                                         let resp = ui.add(egui::Label::new(
-                                            egui::RichText::new(path).weak()
+                                            egui::RichText::new(path).color(theme::t().muted)
                                         ).sense(egui::Sense::click()));
                                         resp.context_menu(|ui| {
                                             if ui.button("Open in Explorer").clicked() {
@@ -3263,17 +3430,17 @@ fn render_node(
             let header = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), hh));
             let clipped = header.intersect(viewport);
             if clipped.width() > 0.0 && clipped.height() > 0.0 {
-                let hdr_col = match color_mode {
+                let hdr_col = crate::contrast::surface(match color_mode {
                     ColorMode::Depth | ColorMode::Extension => header_color(node.color_index, theme),
                     ColorMode::Age => age_header_color(node.modified, time_range),
-                };
+                }, crate::theme::t().dark);
                 batch.push_flat(clipped, hdr_col);
 
                 if hh >= 14.0 && inner.width() > 30.0 {
                     let text_painter = painter.with_clip_rect(clipped);
                     // Whole-pixel font sizes: fractional sizes mint new glyph
                     // rasterizations every zoom frame and grow the atlas.
-                    let font_size = (hh - 4.0).clamp(9.0, 13.0).round();
+                    let font_size = (hh - 4.0).clamp(11.0, 14.0).round();
                     let size_text = if node.file_count > 0 && inner.width() > 180.0 {
                         format!("{} ({})", format_size(node.size), format_count(node.file_count))
                     } else {
@@ -3304,7 +3471,7 @@ fn render_node(
                             egui::Align2::RIGHT_TOP,
                             size_text,
                             egui::FontId::proportional(font_size - 1.0),
-                            text_color_for(hdr_col).gamma_multiply(0.6),
+                            text_color_for(hdr_col),
                         );
                     }
                 }
@@ -3358,26 +3525,23 @@ fn render_node(
             let text_clip = inner.intersect(viewport);
             if text_clip.width() > 0.0 && text_clip.height() > 0.0 {
                 let text_painter = painter.with_clip_rect(text_clip);
-                let text_col = text_color_for(col);
-                let font_size = 11.0f32.min(inner.height() - 3.0).round();
+                let font_size = 12.0f32.min(inner.height() - 3.0).round();
                 let max_chars = (((inner.width() - 6.0) / (font_size * 0.55)) as usize) & !3;
                 let label = truncate_str(&node.name, max_chars);
 
-                text_painter.text(
+                paint_block_label(&text_painter,
                     inner.min + egui::vec2(3.0, 2.0),
-                    egui::Align2::LEFT_TOP,
                     label,
                     egui::FontId::proportional(font_size),
-                    text_col,
+                    col,
                 );
 
                 if inner.height() > 28.0 {
-                    text_painter.text(
+                    paint_block_label(&text_painter,
                         inner.min + egui::vec2(3.0, font_size + 3.0),
-                        egui::Align2::LEFT_TOP,
                         format_size(node.size),
-                        egui::FontId::proportional(9.0),
-                        text_col.gamma_multiply(0.6),
+                        egui::FontId::proportional(11.0),
+                        col,
                     );
                 }
             }
@@ -3765,12 +3929,19 @@ fn age_header_color(modified: u64, time_range: (u64, u64)) -> egui::Color32 {
 }
 
 fn text_color_for(bg: egui::Color32) -> egui::Color32 {
-    let lum = 0.299 * bg.r() as f64 + 0.587 * bg.g() as f64 + 0.114 * bg.b() as f64;
-    if lum > 150.0 {
-        egui::Color32::from_gray(20)
-    } else {
-        egui::Color32::from_gray(235)
-    }
+    crate::contrast::on_fill(bg)
+}
+
+/// Give small labels a protected tinted face; keep the surrounding tile vivid.
+/// Name and size both use full-strength ink instead of fading into the cushion.
+fn paint_block_label(painter: &egui::Painter, pos: egui::Pos2, text: String,
+    font: egui::FontId, tile: egui::Color32) {
+    if text.is_empty() { return }
+    let face = crate::contrast::surface(tile, crate::theme::t().dark);
+    let galley = painter.layout_no_wrap(text, font, text_color_for(face));
+    painter.rect_filled(egui::Rect::from_min_size(pos - egui::vec2(2.0, 0.0),
+        galley.size() + egui::vec2(4.0, 1.0)), 1.0, face);
+    painter.galley(pos, galley, text_color_for(face));
 }
 
 // ===================== Helpers =====================

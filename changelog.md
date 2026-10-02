@@ -1,4 +1,21 @@
-﻿## v0.15.2 - pointer-anchored tooltips + theme correctness
+## v0.15.3 - stronger contrast + live scan progress
+
+- Protect text-bearing surfaces after gradient and panel compositing, including
+  hover and selection states. Correct text and button outlines separately while
+  retaining vivid treemap colors.
+- Make resting button outlines visible and keep their width stable during hover,
+  press and focus. Separate toolbar and scan/view controls so they fit laptop widths.
+- Increase treemap header and file-label sizes, give labels protected backgrounds,
+  and improve colored text in List, Top Files, Duplicates and the age legend.
+- Publish the first discovered file immediately, then update every 250 ms inside
+  unfinished folders. Bound live previews, preserve full totals with aggregate
+  tiles, and retain the camera during updates.
+- Add a repeatable PowerShell gauntlet covering Rust regressions, native UI states
+  at two window sizes, real scan growth/pause/resume/cancel, and the existing
+  500,000-file camera stress harness. Final validation: 44 tests passed and all
+  41 native captures visually inspected.
+
+## v0.15.2 - pointer-anchored tooltips + theme correctness
 
 - File information tooltips now open beside the pointer instead of at the
   treemap's top-left corner, with automatic edge-aware placement.

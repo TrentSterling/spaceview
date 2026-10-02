@@ -18,7 +18,12 @@ cargo build --release # optimized release build
 cargo run            # run in debug mode
 ```
 
-## Architecture (v0.12.0)
+**Verification:** `./tools/gauntlet.ps1 -LivePath 'C:/path/to/a/large/folder'`.
+Runs regressions, release build, native UI captures at two sizes, real live scan
+checks and 500,000-file stress. Inspect the PNGs after automated checks pass.
+See `docs/GAUNTLET.md` and `docs/QA-2026-10-01.md`.
+
+## Architecture (v0.15.3)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console
@@ -29,6 +34,8 @@ cargo run            # run in debug mode
 - `src/world_layout.rs` - LayoutNode tree in world-space. Lazy expand_visible (2048-child cap per expansion + "+N more" aggregate tail, 250k global node budget), capacity-releasing prune, cached normalized child layouts (child_norm), ancestor_chain
 - `src/treemap.rs` - Squarified treemap layout algorithm (Bruls, Huizing, van Wijk). O(1)-per-item row selection via running min/max; layout_norm for cacheable normalized layouts. Test module pins behavior to the original reference implementation
 - `src/stress.rs` - Perf harness: `--synthetic N` in-memory tree generator, `--stress S` scripted camera thrash, per-second CSV metrics (frame ms, layout calls, shapes, node count, RSS)
+- `src/contrast.rs` - Protected text-bearing surfaces, foreground ink, outlines and actual gradient/panel composition, following Trontop's stronger contrast pass
+- `src/gauntlet.rs` - Read-only real scan probe and native live scan screenshot receipts
 
 ### Key Design Decisions
 - **Cached normalized layouts (v0.12):** Each directory's squarified child layout is computed ONCE at expansion, normalized to a `1.0 x aspect` box, and stored on the LayoutNode (`child_norm` + `child_norm_aspect`). Render, hit test, and minimap scale the cached rects into the screen content rect every frame; `treemap::layout` never runs in the per-frame path. World rects derive from the same normalized layout, so world-space decisions and rendering always agree. Fixed 16px headers, 3px padding, 1.5px border.
@@ -41,7 +48,7 @@ cargo run            # run in debug mode
 - **World space (approximate):** Root fills (0,0) to (1.0, aspect_ratio). World_rects used only for camera/expand/prune decisions, not rendering.
 - **Lazy LOD:** Directories expand when screen size > 80px, prune when off-screen/tiny. Dynamic expand budget (32 during animation, 8 otherwise).
 - **Color themes:** 3 HSL-based themes (Rainbow, Neon, Ocean) using golden angle (137.508 degrees) hue spacing. High lightness (L=0.60-0.65) for vivid SpaceMonger-style colors. Selectable via ComboBox. Colors assigned by depth, never change with zoom.
-- **Color pipeline:** Files use base_rgb directly (vivid). Headers at 80% brightness. Bodies at 35% brightness (colored tint, visible as gap borders). Dynamic text_color_for() on headers picks black or white based on luminance. Directory bodies have explicit 1px dark border stroke.
+- **Color pipeline:** Visualization blocks retain vivid base_rgb colors. Text-bearing headers and label faces receive dark/light surface protection; text_color_for() picks black or white using ratio and APCA checks. Palette text in list views and the age legend receives foreground correction. Directory bodies retain explicit borders.
 - **Dark/light mode:** Toggle in toolbar. Persisted to prefs.txt. Dark mode default. Only affects UI chrome, treemap stays dark-bodied.
 - **Camera-preserving resize:** Window resize remaps camera proportionally instead of resetting to root.
 - **Scan progress:** Shows elapsed time and files/sec rate during scans.
@@ -56,7 +63,7 @@ cargo run            # run in debug mode
 - **Search bar:** Text filter in toolbar. Filters List and Top Files views by filename/path match.
 - **Free space block:** Injected as child node in build_layout. Medium green rgb(60,140,60). Toggle via toolbar button.
 - **Right-click context menu:** Available in both Treemap and List views. Open in Explorer, Copy Path, Delete to Recycle Bin.
-- **Live scan visualization:** Treemap builds progressively as directories are discovered. `scan_directory_live()` sends partial tree snapshots after each top-level child directory completes. UI drains snapshots each frame, keeping only the newest, and rebuilds the layout. Treemap is interactive (zoom, pan, hover) during scanning.
+- **Live scan visualization (v0.15.3):** Directory entries stream directly. `scan_directory_live()` publishes immediately after the first file, then every 250 ms inside unfinished folders. Previews include the active ancestor chain, cap detail at 16,384 nodes, and preserve totals through non-actionable aggregate tiles. A one-item sync channel uses nonblocking publication. UI rebuilds preserve the camera and invalidate tree references. The final completion channel carries the full tree.
 - **Deferred drops:** When switching drives, old FileNode/WorldLayout trees are moved to a background thread for deallocation. Prevents UI freeze from dropping millions of allocations on the main thread.
 - **Scan thread compute:** `compute_time_range()` and file collection run on the scan thread, not the UI thread. Results are bundled with the completion message.
 - **Window position persistence:** Window position and size saved to prefs.txt on exit, restored on launch. Supports multi-monitor setups.

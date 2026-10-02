@@ -25,6 +25,7 @@ pub static LAYOUT_CALLS: AtomicUsize = AtomicUsize::new(0);
 pub static SHAPE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
+#[cfg(not(test))]
 pub fn inc_layout_calls() {
     if ACTIVE.load(Ordering::Relaxed) {
         LAYOUT_CALLS.fetch_add(1, Ordering::Relaxed);
