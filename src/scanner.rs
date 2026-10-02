@@ -108,25 +108,81 @@ pub(crate) fn append_child(parent: &mut FileNode, child: FileNode) {
     parent.children.push(child);
 }
 
+pub(crate) fn read_entries(root: &Path, identify: bool)
+    -> std::io::Result<Box<dyn Iterator<Item = std::io::Result<FileNode>>>> {
+    #[cfg(windows)]
+    if identify {
+        if let Ok(entries) = crate::journal::directory_entries(root) {
+            let root = root.to_path_buf();
+            return Ok(Box::new(entries.filter_map(move |entry| {
+                let entry = match entry { Ok(entry) => entry, Err(error) => return Some(Err(error)) };
+                if entry.stamp.reparse { return None; }
+                let path = root.join(&entry.name);
+                let name = entry.name.to_string_lossy().into_owned();
+                let stamp = entry.stamp;
+                Some(Ok(FileNode { name, path, size: if stamp.is_dir { 0 } else { stamp.size },
+                    is_dir: stamp.is_dir, file_count: 0, modified: if stamp.is_dir { 0 } else { stamp.modified },
+                    children: Vec::new(), file_id: stamp.id, volatile: stamp.id == 0 }))
+            })));
+        }
+    }
+    Ok(Box::new(std::fs::read_dir(root)?.filter_map(move |entry| {
+        let entry = match entry { Ok(entry) => entry, Err(error) => return Some(Err(error)) };
+        let kind = match entry.file_type() { Ok(kind) => kind, Err(error) => return Some(Err(error)) };
+        if kind.is_symlink() || (!kind.is_dir() && !kind.is_file()) { return None; }
+        let path = entry.path();
+        let stamp = identify.then(|| crate::journal::fresh_stamp(&path).ok()).flatten();
+        if stamp.as_ref().is_some_and(|s| s.reparse || s.is_dir != kind.is_dir()) { return None; }
+        let (size, modified) = if kind.is_dir() { (0, 0) }
+            else if let Some(stamp) = &stamp { (stamp.size, stamp.modified) }
+            else {
+                let metadata = match entry.metadata() { Ok(metadata) => metadata, Err(error) => return Some(Err(error)) };
+                (metadata.len(), metadata.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))
+            };
+        Some(Ok(FileNode { name: entry.file_name().to_string_lossy().into_owned(), path,
+            size, is_dir: kind.is_dir(), file_count: 0, modified, children: Vec::new(),
+            file_id: stamp.as_ref().map_or(0, |s| s.id), volatile: stamp.as_ref().is_none_or(|s| s.volatile) }))
+    })))
+}
+
 /// Copy bounded detail without walking/sorting millions of discovered files.
 /// Full totals survive; WorldLayout aggregates omitted bytes without file actions.
 pub(crate) fn preview_node(node: &FileNode, budget: usize) -> FileNode {
+    preview_branch(node, &[], budget)
+}
+
+fn preview_branch(node: &FileNode, active: &[FileNode], budget: usize) -> FileNode {
     let mut preview = node.clone_shallow();
+    for branch in active {
+        preview.size += branch.size;
+        preview.file_count += branch.file_count;
+        preview.modified = preview.modified.max(branch.modified);
+    }
+    // Keep one global budget, independent of the active directory's depth.
+    // Reserve the active spine, then give completed branches detail in
+    // proportion to their displayed area rather than their child count.
+    let active_min = if active.is_empty() { 0 }
+        else { (active.len() + 1).min(budget.saturating_sub(1)) };
     let count = node
         .children
         .len()
         .min(PREVIEW_CHILD_CAP)
-        .min(budget.saturating_sub(1));
-    if count > 0 {
-        let child_budget = (budget - 1) / count;
-        preview.children = node
-            .children
-            .iter()
-            .take(count)
-            .map(|child| preview_node(child, child_budget))
-            .collect();
-        preview.children.sort_by(|a, b| b.size.cmp(&a.size));
+        .min(budget.saturating_sub(1 + active_min));
+    let active_size: u64 = active.iter().map(|branch| branch.size).sum();
+    let weight: u128 = node.children.iter().take(count).map(|child| child.size as u128).sum::<u128>()
+        + active_size as u128;
+    let spare = budget.saturating_sub(1 + count + active_min);
+    let share = |size: u64| {
+        if weight == 0 { spare / (count + usize::from(active_min > 0)).max(1) }
+        else { ((size as u128 * spare as u128) / weight) as usize }
+    };
+    preview.children = node.children.iter().take(count)
+        .map(|child| preview_node(child, 1 + share(child.size))).collect();
+    if active_min > 0 {
+        preview.children.push(preview_branch(&active[0], &active[1..], active_min + share(active_size)));
     }
+    preview.children.sort_by(|a, b| b.size.cmp(&a.size));
     preview
 }
 
@@ -179,17 +235,8 @@ impl Scanner {
         {
             return;
         }
-        let level_budget = (PREVIEW_NODE_BUDGET / self.stack.len().max(1)).max(1);
-        let mut active: Option<FileNode> = None;
-        for node in self.stack.iter().rev() {
-            let mut preview = preview_node(node, level_budget);
-            if let Some(child) = active.take() {
-                append_child(&mut preview, child);
-                preview.children.sort_by(|a, b| b.size.cmp(&a.size));
-            }
-            active = Some(preview);
-        }
-        if let Some(root) = active {
+        if let Some((root, active)) = self.stack.split_first() {
+            let root = preview_branch(root, active, PREVIEW_NODE_BUDGET);
             // One queued preview, no blocking/backlog when the window is busy.
             // The unabridged final tree uses its own completion channel.
             let _ = tx.try_send(root);
@@ -198,12 +245,18 @@ impl Scanner {
     }
 
     fn directory(&mut self, root: &Path) -> Option<FileNode> {
+        self.directory_with_id(root, 0)
+    }
+
+    fn directory_with_id(&mut self, root: &Path, file_id: u64) -> Option<FileNode> {
         if !self.progress.keep_scanning() {
             return None;
         }
         let mut node = directory_node(root);
-        if self.identify {
-            if let Ok(stamp) = crate::journal::stamp(root) {
+        node.file_id = file_id;
+        node.volatile = file_id == 0;
+        if self.identify && file_id == 0 {
+            if let Ok(stamp) = crate::journal::fresh_stamp(root) {
                 if stamp.reparse || !stamp.is_dir {
                     return Some(node);
                 }
@@ -215,7 +268,7 @@ impl Scanner {
         self.progress
             .directories_read
             .fetch_add(1, Ordering::Relaxed);
-        if let Ok(entries) = std::fs::read_dir(root) {
+        if let Ok(entries) = read_entries(root, self.identify) {
             for entry in entries {
                 let Ok(entry) = entry else {
                     self.stack.last_mut().unwrap().volatile = true;
@@ -224,67 +277,22 @@ impl Scanner {
                 if !self.progress.keep_scanning() {
                     return None;
                 }
-                let Ok(kind) = entry.file_type() else {
-                    self.stack.last_mut().unwrap().volatile = true;
-                    continue;
-                };
-                // Avoid symlink/junction cycles and escaping the selected drive.
-                if kind.is_symlink() {
-                    continue;
-                }
-                let path = entry.path();
-                if kind.is_dir() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
+                if entry.is_dir {
+                    let name = &entry.name;
                     if name.eq_ignore_ascii_case("System Volume Information")
                         || name.eq_ignore_ascii_case("$Recycle.Bin")
                     {
                         continue;
                     }
-                    let child = self.directory(&path)?;
+                    let child = self.directory_with_id(&entry.path, entry.file_id)?;
                     append_child(self.stack.last_mut().unwrap(), child);
-                } else if kind.is_file() {
-                    let stamp = if self.identify {
-                        crate::journal::stamp(&path).ok()
-                    } else {
-                        None
-                    };
-                    if stamp.as_ref().is_some_and(|s| s.reparse || s.is_dir) {
-                        self.stack.last_mut().unwrap().volatile = true;
-                        continue;
-                    }
-                    let Ok(metadata) = entry.metadata() else {
-                        self.stack.last_mut().unwrap().volatile = true;
-                        continue;
-                    };
+                } else {
                     self.progress.metadata_read.fetch_add(1, Ordering::Relaxed);
-                    let size = stamp.as_ref().map_or(metadata.len(), |s| s.size);
-                    let modified = stamp.as_ref().map(|s| s.modified).unwrap_or_else(|| {
-                        metadata
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    });
                     self.progress.files_scanned.fetch_add(1, Ordering::Relaxed);
                     self.progress
                         .bytes_scanned
-                        .fetch_add(size, Ordering::Relaxed);
-                    append_child(
-                        self.stack.last_mut().unwrap(),
-                        FileNode {
-                            name: entry.file_name().to_string_lossy().into_owned(),
-                            path,
-                            size,
-                            is_dir: false,
-                            file_count: 0,
-                            modified,
-                            children: Vec::new(),
-                            file_id: stamp.as_ref().map_or(0, |s| s.id),
-                            volatile: stamp.as_ref().is_none_or(|s| s.volatile),
-                        },
-                    );
+                        .fetch_add(entry.size, Ordering::Relaxed);
+                    append_child(self.stack.last_mut().unwrap(), entry);
                 }
                 self.publish();
             }
@@ -306,16 +314,6 @@ pub(crate) fn scan_full(
     let mut scanner = Scanner::new(progress, snapshots);
     scanner.identify = identify;
     scanner.directory(root)
-}
-
-/// First discovered file immediately, then at most four updates/second,
-/// including progress inside unfinished top-level folders.
-pub fn scan_directory_live(
-    root: &Path,
-    progress: Arc<ScanProgress>,
-    snapshots: SyncSender<FileNode>,
-) -> Option<FileNode> {
-    Scanner::new(progress, Some(snapshots)).directory(root)
 }
 
 #[cfg(test)]
@@ -349,6 +347,27 @@ mod tests {
 
     fn count_nodes(node: &FileNode) -> usize {
         1 + node.children.iter().map(count_nodes).sum::<usize>()
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_directory_pages_keep_all_names_sizes_and_file_ids() {
+        let fixture = Fixture::new();
+        for i in 0..700 {
+            fixture.file(&format!("unicode-\u{1f680}-{i:04}-long-enough-for-multiple-directory-pages.bin"), i % 11);
+        }
+        std::fs::create_dir(fixture.0.join("nested")).unwrap();
+        let entries = read_entries(&fixture.0, true).unwrap().collect::<std::io::Result<Vec<_>>>().unwrap();
+        assert_eq!(entries.len(), 701);
+        assert!(entries.iter().all(|entry| entry.file_id != 0));
+        let mut native: Vec<_> = entries.iter().map(|entry| (entry.name.clone(), entry.is_dir, entry.size)).collect();
+        let mut ordinary: Vec<_> = read_entries(&fixture.0, false).unwrap()
+            .map(|entry| { let entry = entry.unwrap(); (entry.name, entry.is_dir, entry.size) }).collect();
+        native.sort(); ordinary.sort();
+        assert_eq!(native, ordinary);
+        for entry in entries.iter().step_by(67) {
+            assert_eq!(entry.file_id, crate::journal::fresh_stamp(&entry.path).unwrap().id);
+        }
     }
 
     #[test]
@@ -394,6 +413,37 @@ mod tests {
         assert_eq!(tree.file_count, 32);
         assert_eq!(tree.size, 288);
         assert_eq!(tree.children[0].children.len(), 32);
+    }
+
+    #[test]
+    fn completed_detail_does_not_collapse_when_active_scan_goes_deeper() {
+        let mut completed = crate::stress::generate_synthetic_tree(1000);
+        completed.name = "completed".into();
+        let expected_detail = count_nodes(&preview_node(&completed, PREVIEW_NODE_BUDGET));
+        assert!(expected_detail > 500, "fixture must expose detail-budget shrinkage");
+        let mut root = directory_node(Path::new("root"));
+        append_child(&mut root, completed);
+        for depth in [1, 8, 32] {
+            let mut scanner = Scanner::new(Arc::new(ScanProgress::new()), None);
+            scanner.stack.push(root.clone());
+            for level in 0..depth {
+                scanner.stack.push(directory_node(Path::new(&format!("active-{level}"))));
+            }
+            let leaf = scanner.stack.last_mut().unwrap();
+            leaf.size = 1;
+            leaf.file_count = 1;
+            let (tx, rx) = mpsc::sync_channel(1);
+            scanner.snapshots = Some(tx);
+            scanner.progress.files_scanned.store(root.file_count + 1, Ordering::Relaxed);
+            scanner.publish();
+            let preview = rx.try_recv().unwrap();
+            let retained = preview.children.iter().find(|child| child.name == "completed").unwrap();
+            assert_eq!(count_nodes(retained), expected_detail,
+                "completed folder lost visible detail at active depth {depth}");
+            assert!(count_nodes(&preview) <= PREVIEW_NODE_BUDGET);
+            assert_eq!(preview.size, root.size + 1);
+            assert_eq!(preview.file_count, root.file_count + 1);
+        }
     }
 
     #[test]

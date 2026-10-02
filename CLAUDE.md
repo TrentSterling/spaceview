@@ -21,9 +21,9 @@ cargo run            # run in debug mode
 **Verification:** `./tools/gauntlet.ps1 -LivePath 'C:/path/to/a/large/folder'`.
 Runs regressions, release build, native UI captures at two sizes, real live scan
 checks and 500,000-file stress. Inspect the PNGs after automated checks pass.
-See `docs/GAUNTLET.md` and `docs/QA-v0.16.0.md`.
+See `docs/GAUNTLET.md` and `docs/QA-v0.16.1.md`.
 
-## Architecture (v0.16.0)
+## Architecture (v0.16.1)
 
 ### Source Files
 - `src/main.rs` - Entry point, creates eframe window (1024x700), loads window icon, `#![windows_subsystem = "windows"]` hides console

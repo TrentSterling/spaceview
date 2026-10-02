@@ -64,7 +64,9 @@ fn main() -> eframe::Result<()> {
         let dir = shots::parse_flag_path(&args, "--report-dir")
             .unwrap_or_else(|| std::path::PathBuf::from("target/gauntlet/probe"));
         let seconds = stress::parse_flag_f32(&args, "--probe-seconds").unwrap_or(5.0);
-        gauntlet::scan_probe(&path, &dir, seconds);
+        gauntlet::scan_probe(&path, &dir, seconds,
+            !args.iter().any(|arg| arg == "--probe-without-cache"),
+            !args.iter().any(|arg| arg == "--probe-without-previews"));
         return Ok(());
     }
     let synthetic_n = stress::parse_flag_usize(&args, "--synthetic");

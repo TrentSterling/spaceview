@@ -101,6 +101,24 @@ impl WorldLayout {
         );
     }
 
+    pub fn expand_live_preview(&mut self, file_root: &FileNode, camera: &crate::camera::Camera, viewport: egui::Rect) {
+        self.expand_visible(file_root, camera, viewport, crate::scanner::PREVIEW_NODE_BUDGET);
+    }
+
+    /// Native scan harness: reject a coarse frame immediately after a snapshot.
+    pub fn pending_visible_detail(&self, camera: &crate::camera::Camera, viewport: egui::Rect) -> usize {
+        fn pending(nodes: &[LayoutNode], camera: &crate::camera::Camera, viewport: egui::Rect) -> usize {
+            nodes.iter().map(|node| {
+                let rect = camera.world_to_screen(node.world_rect, viewport);
+                if !rect.intersects(viewport) { return 0; }
+                usize::from(node.is_dir && node.has_children && !node.children_expanded
+                    && rect.width().min(rect.height()) > 80.0)
+                    + pending(&node.children, camera, viewport)
+            }).sum()
+        }
+        pending(&self.root_nodes, camera, viewport)
+    }
+
     /// Prune children of off-screen or tiny nodes to free memory.
     /// Runs every 15 frames, or every frame while over the node budget.
     pub fn maybe_prune(&mut self, camera: &crate::camera::Camera, viewport: egui::Rect) {
@@ -436,6 +454,24 @@ mod tests {
         let mut cam = Camera::new(wl.world_rect.center(), 1.0);
         cam.set_world_rect(wl.world_rect);
         cam
+    }
+
+    #[test]
+    fn every_preview_swap_has_visible_detail_in_its_first_frame() {
+        let mut branch = file("deep-file", 100);
+        for depth in 0..30 { branch = dir(&format!("d{depth}"), vec![branch]); }
+        let root = dir("root", vec![branch]);
+        let mut partial = WorldLayout::new(&root, 0.7);
+        let camera = camera_at_root(&partial);
+        partial.expand_visible(&root, &camera, viewport(), 8);
+        assert!(partial.pending_visible_detail(&camera, viewport()) > 0,
+            "fixture must expose the old one-frame collapse");
+        for _ in 0..5 {
+            let mut replacement = WorldLayout::new(&root, 0.7);
+            replacement.expand_live_preview(&root, &camera, viewport());
+            assert_eq!(replacement.pending_visible_detail(&camera, viewport()), 0);
+            assert_eq!(replacement.count_nodes(), 31);
+        }
     }
 
     #[test]

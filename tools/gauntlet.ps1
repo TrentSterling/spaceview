@@ -17,7 +17,7 @@ function Invoke-NativeCheck([string]$Name, [string[]]$Arguments, [int]$TimeoutSe
     $stdout = Join-Path $Output ($Name + '-stdout.txt')
     $stderr = Join-Path $Output ($Name + '-stderr.txt')
     # These are the app's visible native UI checks. The read-only probe is hidden.
-    $windowStyle = if ($Name -in @('probe', 'cache', 'cache-crossprocess')) { 'Hidden' } else { 'Normal' }
+    $windowStyle = if ($Name.StartsWith('probe') -or $Name -in @('cache', 'cache-crossprocess')) { 'Hidden' } else { 'Normal' }
     $process = Start-Process -FilePath (Join-Path $repo 'target/release/spaceview.exe') `
         -ArgumentList $Arguments -WorkingDirectory $Output -WindowStyle $windowStyle `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
@@ -64,18 +64,35 @@ try {
         }
     }
 
-    # Cold/live captures exercise the scanner, even if a prior baseline exists.
-    $env:SPACEVIEW_DISABLE_CACHE = '1'
+    # Exercise the same cache-enabled cold path that ships. Disabling caching
+    # here hid the v0.16.0 per-file-open performance regression.
+    Remove-Item Env:SPACEVIEW_DISABLE_CACHE -ErrorAction SilentlyContinue
     if ($LivePath) {
         if (-not (Test-Path -LiteralPath $LivePath -PathType Container)) { throw "Missing live scan folder: $LivePath" }
         $probe = Join-Path $Output 'probe'
         Invoke-NativeCheck 'probe' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $probe + '"'), '--probe-seconds', '5')
         Get-Content -LiteralPath (Join-Path $probe 'scan-probe.txt')
+        $quietProbe = Join-Path $Output 'probe-without-previews'
+        Invoke-NativeCheck 'probe-without-previews' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $quietProbe + '"'), '--probe-seconds', '5', '--probe-without-previews')
+        $plainProbe = Join-Path $Output 'probe-without-cache'
+        Invoke-NativeCheck 'probe-without-cache' @('--scan-probe', ('"' + $LivePath + '"'), '--report-dir', ('"' + $plainProbe + '"'), '--probe-seconds', '5', '--probe-without-cache')
+        function Read-ProbeFiles([string]$Directory) {
+            $report = Get-Content -LiteralPath (Join-Path $Directory 'scan-probe.txt') -Raw
+            if ($report -notmatch 'files discovered: (\d+)') { throw 'Missing probe file count' }
+            return [double]$Matches[1]
+        }
+        $liveFiles = Read-ProbeFiles $probe
+        $quietFiles = Read-ProbeFiles $quietProbe
+        $plainFiles = Read-ProbeFiles $plainProbe
+        if ($liveFiles -lt $quietFiles * 0.7) { throw 'Live previews caused severe scan slowdown' }
+        if ($liveFiles -lt $plainFiles * 0.7) { throw 'Cache seeding caused severe cold-scan slowdown' }
+        Write-Host "[SpaceViewGauntlet] PASS scan throughput: cache-live=$liveFiles cache-quiet=$quietFiles plain-live=$plainFiles (five seconds each)"
         $live = Join-Path $Output 'live'
         Invoke-NativeCheck 'live' @('--live-shots', ('"' + $live + '"'), '--scan', ('"' + $LivePath + '"'), '--shot-width', '1024', '--shot-height', '700')
         if (@(Get-ChildItem -LiteralPath $live -Filter '*.png').Count -ne 5) { throw 'Missing live scan screenshots' }
         $liveReport = Get-Content -LiteralPath (Join-Path $live 'live-report.txt') -Raw
         if ($liveReport -notmatch 'COMPLETE native live scan checks passed') { throw 'Live scan checks incomplete' }
+        if ($liveReport -notmatch 'PASS preview continuity:') { throw 'Preview frame checks incomplete' }
         Write-Host $liveReport
     }
 

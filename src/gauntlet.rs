@@ -43,6 +43,9 @@ pub struct LiveScript {
     pub paused_files: u64,
     pub pause_settled: bool,
     pub receipts: Vec<String>,
+    pub layout_frames: u64,
+    pub layout_updates: u64,
+    pub layout_last_files: u64,
 }
 impl LiveScript {
     pub fn new(dir: PathBuf) -> Self {
@@ -57,6 +60,9 @@ impl LiveScript {
             paused_files: 0,
             pause_settled: false,
             receipts: Vec::new(),
+            layout_frames: 0,
+            layout_updates: 0,
+            layout_last_files: 0,
         }
     }
     pub fn record(&mut self, message: String) {
@@ -78,7 +84,7 @@ fn node_count(node: &FileNode) -> usize {
 }
 
 /// Read-only timing probe against real files, independent of GPU/window startup.
-pub fn scan_probe(path: &Path, output: &Path, seconds: f32) {
+pub fn scan_probe(path: &Path, output: &Path, seconds: f32, cache: bool, previews: bool) {
     std::fs::create_dir_all(output).expect("create probe output");
     let mut log = std::fs::File::create(output.join("scan-probe.csv")).unwrap();
     writeln!(
@@ -90,7 +96,13 @@ pub fn scan_probe(path: &Path, output: &Path, seconds: f32) {
     let p = progress.clone();
     let root = path.to_path_buf();
     let (tx, rx) = mpsc::sync_channel(1);
-    let worker = std::thread::spawn(move || scanner::scan_directory_live(&root, p, tx));
+    let worker = std::thread::spawn(move || {
+        if cache {
+            crate::scan_cache::scan_with_options(&root, p, previews.then_some(tx), true)
+        } else {
+            scanner::scan_full(&root, p, previews.then_some(tx), false)
+        }
+    });
     let start = Instant::now();
     let mut first = None;
     let mut count = 0;
@@ -117,7 +129,10 @@ pub fn scan_probe(path: &Path, output: &Path, seconds: f32) {
                 )
                 .unwrap();
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if worker.is_finished() { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
@@ -133,14 +148,13 @@ pub fn scan_probe(path: &Path, output: &Path, seconds: f32) {
         );
         assert_eq!(root.size, progress.bytes_scanned.load(Ordering::Relaxed));
     }
-    let first = first.expect("no live preview arrived");
-    assert!(first < 1000.0, "first live preview took {first:.2}ms");
-    assert!(
-        count >= 2,
-        "select a folder large enough for repeated live previews"
-    );
-    let report = format!("[SpaceViewGauntlet] scan path: {}\n[SpaceViewGauntlet] first preview: {first:.2} ms\n[SpaceViewGauntlet] live previews: {count}\n[SpaceViewGauntlet] files discovered: {}\n[SpaceViewGauntlet] completed: {completed}\n[SpaceViewGauntlet] COMPLETE scan probe passed\n",
-        path.display(), progress.files_scanned.load(Ordering::Relaxed));
+    if previews {
+        let first = first.expect("no live preview arrived");
+        assert!(first < 1000.0, "first live preview took {first:.2}ms");
+        assert!(count >= 2, "select a folder large enough for repeated live previews");
+    }
+    let report = format!("[SpaceViewGauntlet] scan path: {}\n[SpaceViewGauntlet] cache identities: {cache}; previews: {previews}\n[SpaceViewGauntlet] first preview: {:.2} ms\n[SpaceViewGauntlet] live previews: {count}\n[SpaceViewGauntlet] files discovered: {}\n[SpaceViewGauntlet] completed: {completed}\n[SpaceViewGauntlet] COMPLETE scan probe passed\n",
+        path.display(), first.unwrap_or(0.0), progress.files_scanned.load(Ordering::Relaxed));
     std::fs::write(output.join("scan-probe.txt"), &report).unwrap();
     eprint!("{report}");
 }

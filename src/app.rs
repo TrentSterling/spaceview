@@ -669,6 +669,9 @@ impl SpaceViewApp {
             script.initialized = false;
             script.pending = false;
             if script.stage == crate::gauntlet::LIVE_FILES.len() {
+                assert!(script.layout_updates >= 2, "live checks never observed a preview replacement");
+                script.record(format!("PASS preview continuity: {} updates, {} rendered frames without collapsed visible detail",
+                    script.layout_updates, script.layout_frames));
                 script.record("COMPLETE native live scan checks passed".into());
                 std::process::exit(0);
             }
@@ -2751,9 +2754,25 @@ impl eframe::App for SpaceViewApp {
             if let (Some(ref mut layout), Some(ref root)) =
                 (&mut self.world_layout, &self.scan_root)
             {
-                let budget = if self.camera.is_animating() { 32 } else { 8 };
-                layout.expand_visible(root, &self.camera, viewport, budget);
+                // A bounded live snapshot must reach its visible detail in this
+                // frame. The ordinary eight-folder budget briefly collapsed
+                // the entire map after every replacement, then filled it again.
+                if self.scanning {
+                    layout.expand_live_preview(root, &self.camera, viewport);
+                } else {
+                    let budget = if self.camera.is_animating() { 32 } else { 8 };
+                    layout.expand_visible(root, &self.camera, viewport, budget);
+                }
                 layout.maybe_prune(&self.camera, viewport);
+                if let Some(script) = self.live_shots.as_mut() {
+                    assert_eq!(layout.pending_visible_detail(&self.camera, viewport), 0,
+                        "preview displayed a collapsed frame before its detail was ready");
+                    script.layout_frames += 1;
+                    if root.file_count != script.layout_last_files {
+                        script.layout_last_files = root.file_count;
+                        script.layout_updates += 1;
+                    }
+                }
             }
 
             // 4. Render

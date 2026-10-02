@@ -102,6 +102,7 @@ mod windows {
     use sha2::{Digest, Sha256};
     use std::fs::{File, OpenOptions};
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -116,6 +117,120 @@ mod windows {
 
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    pub struct DirectoryEntry {
+        pub name: std::ffi::OsString,
+        pub stamp: Stamp,
+    }
+
+    /// File IDs, sizes and dates arrive in the same directory pages as names.
+    /// Cold scans must not open/query every individual file to seed the cache.
+    pub struct DirectoryEntries {
+        file: File,
+        buffer: Vec<u64>,
+        offset: usize,
+        next_page: bool,
+        done: bool,
+        extended: bool,
+    }
+
+    impl DirectoryEntries {
+        fn page(&mut self, restart: bool) -> io::Result<()> {
+            let class = match (self.extended, restart) {
+                (true, true) => FileIdExtdDirectoryRestartInfo,
+                (true, false) => FileIdExtdDirectoryInfo,
+                (false, true) => FileIdBothDirectoryRestartInfo,
+                (false, false) => FileIdBothDirectoryInfo,
+            };
+            if unsafe { GetFileInformationByHandleEx(self.file.as_raw_handle(), class,
+                self.buffer.as_mut_ptr().cast(), (self.buffer.len() * 8) as u32) } == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                    self.done = true;
+                    return Ok(());
+                }
+                return Err(error);
+            }
+            self.offset = 0;
+            self.next_page = false;
+            Ok(())
+        }
+    }
+
+    impl Iterator for DirectoryEntries {
+        type Item = io::Result<DirectoryEntry>;
+        fn next(&mut self) -> Option<Self::Item> {
+            while !self.done {
+                if self.next_page {
+                    if let Err(error) = self.page(false) {
+                        self.done = true;
+                        return Some(Err(error));
+                    }
+                    if self.done { return None; }
+                }
+                let capacity = self.buffer.len() * 8;
+                let (name_offset, record_size) = if self.extended {
+                    (std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName), std::mem::size_of::<FILE_ID_EXTD_DIR_INFO>())
+                } else {
+                    (std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName), std::mem::size_of::<FILE_ID_BOTH_DIR_INFO>())
+                };
+                if self.offset + record_size > capacity {
+                    self.done = true;
+                    return Some(Err(invalid("directory record outside buffer")));
+                }
+                let pointer = unsafe { self.buffer.as_ptr().cast::<u8>().add(self.offset) };
+                let (length, next, id, size, modified, attributes) = if self.extended {
+                    let info = unsafe { pointer.cast::<FILE_ID_EXTD_DIR_INFO>().read_unaligned() };
+                    let id = if info.FileId.Identifier[8..].iter().all(|byte| *byte == 0) {
+                        u64::from_le_bytes(info.FileId.Identifier[..8].try_into().unwrap())
+                    } else { 0 }; // Never truncate an unsupported 128-bit identity.
+                    (info.FileNameLength as usize, info.NextEntryOffset as usize, id,
+                        info.EndOfFile, info.LastWriteTime, info.FileAttributes)
+                } else {
+                    let info = unsafe { pointer.cast::<FILE_ID_BOTH_DIR_INFO>().read_unaligned() };
+                    (info.FileNameLength as usize, info.NextEntryOffset as usize, info.FileId as u64,
+                        info.EndOfFile, info.LastWriteTime, info.FileAttributes)
+                };
+                if length == 0 || length % 2 != 0 || self.offset + name_offset + length > capacity
+                    || (next != 0 && (next % 8 != 0 || next < name_offset + length || self.offset + next >= capacity))
+                    || size < 0 {
+                    self.done = true;
+                    return Some(Err(invalid("invalid directory record")));
+                }
+                let name = std::ffi::OsString::from_wide(unsafe {
+                    std::slice::from_raw_parts(pointer.add(name_offset).cast::<u16>(), length / 2)
+                });
+                self.next_page = next == 0;
+                self.offset += next;
+                if name == "." || name == ".." { continue; }
+                return Some(Ok(DirectoryEntry { name, stamp: Stamp {
+                    id, serial: 0, size: size as u64,
+                    modified: (modified.max(0) as u64).saturating_sub(116_444_736_000_000_000) / 10_000_000,
+                    volatile: false,
+                    is_dir: attributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+                    reparse: attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+                } }));
+            }
+            None
+        }
+    }
+
+    pub fn directory_entries(path: &Path) -> io::Result<DirectoryEntries> {
+        let file = OpenOptions::new().read(true)
+            .access_mode(FILE_LIST_DIRECTORY)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let mut entries = DirectoryEntries { file, buffer: vec![0; 8192],
+            offset: 0, next_page: true, done: false, extended: true };
+        // The extended class omits DOS short-name retrieval. Older drivers
+        // retain the compatible listing rather than reverting to file opens.
+        if entries.page(true).is_err() {
+            entries.extended = false;
+            entries.page(true)?;
+        }
+        Ok(entries)
     }
 
     // Query current metadata along cached paths without opening a file handle.
@@ -207,25 +322,13 @@ mod windows {
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(path)
         };
-        // An outstanding writer may change a file repeatedly without new reason
-        // records until close. Such entries must be freshly read on every scan.
-        // Attribute-only handles do not participate in Windows share checking.
-        // Request read-data/list-directory access for the writer exclusion test,
-        // without reading content; fall back to attributes and mark volatile.
-        let (file, volatile) = match open(
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-        ) {
-            Ok(file) => (file, false),
-            Err(e) if matches!(e.raw_os_error(), Some(32) | Some(5)) => (
-                open(
-                    FILE_READ_ATTRIBUTES,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                )?,
-                true,
-            ),
-            Err(e) => return Err(e),
-        };
+        // Rescans always verify current metadata, including open writers.
+        // Read-data access is unnecessary and triggers expensive content-open
+        // work in filesystem filters during a cold scan.
+        let file = open(
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )?;
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
             return Err(io::Error::last_os_error());
@@ -237,7 +340,7 @@ mod windows {
             serial: info.dwVolumeSerialNumber,
             size: ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64,
             modified: modified.saturating_sub(116_444_736_000_000_000) / 10_000_000,
-            volatile,
+            volatile: false,
             is_dir: info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
             reparse: info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
         })
@@ -468,7 +571,7 @@ mod windows {
 }
 
 #[cfg(windows)]
-pub use windows::{fresh_stamp, stamp, Journal};
+pub use windows::{directory_entries, fresh_stamp, stamp, Journal};
 
 #[cfg(not(windows))]
 pub fn stamp(_: &Path) -> io::Result<Stamp> {

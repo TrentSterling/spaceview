@@ -30,8 +30,14 @@ Before publishing a cached result, SpaceView reads current file identity, size
 and last-write time along the cached paths. A bounded eight-thread pool uses
 `NtQueryInformationByName` where available, with ordinary handle reads as a
 fallback. Identity/type changes or failed queries require fresh discovery.
-Incomplete branches and known data writers also receive fresh enumeration.
+Incomplete branches and unknown identities also receive fresh enumeration.
 This preserves the acceleration structure while keeping metadata current.
+
+Cold NTFS scans collect file references, sizes and timestamps in bulk directory
+pages (`FileIdExtdDirectoryInfo`, with a compatible directory-class fallback). They do not open each discovered file merely
+to seed a cache. Unsupported directory information classes use ordinary
+enumeration and metadata queries. Cached rescans still check current file
+metadata individually before publication, including files with open writers.
 
 Rescans therefore still perform work proportional to the number of cached
 files. Their saving is in avoiding directory discovery and rebuilding unchanged
@@ -86,6 +92,7 @@ The probe reports elapsed time, folders/metadata read, files reused and totals.
 It does not claim that every drive or change pattern has the same speedup.
 
 Windows references: [journal identity](https://learn.microsoft.com/en-us/windows/win32/fileio/using-the-change-journal-identifier),
+[directory pages with file IDs](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info),
 [journal bounds](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_journal_data_v0),
 [record layout and reasons](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-usn_record_v2),
 [coalesced change records](https://learn.microsoft.com/en-us/windows/win32/fileio/change-journal-records),

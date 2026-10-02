@@ -326,7 +326,7 @@ fn refresh(
             }
         }
     } else {
-        let stamp = journal::stamp(&node.path).ok();
+        let stamp = journal::fresh_stamp(&node.path).ok();
         if stamp
             .as_ref()
             .is_some_and(|s| s.id != node.file_id || !s.is_dir || s.reparse)
@@ -343,7 +343,7 @@ fn refresh(
         node.file_count = 0;
         node.modified = 0;
         node.volatile = stamp.as_ref().is_none_or(|s| s.volatile);
-        let Ok(entries) = std::fs::read_dir(&node.path) else {
+        let Ok(entries) = scanner::read_entries(&node.path, true) else {
             node.volatile = true;
             return Some(node);
         };
@@ -355,69 +355,26 @@ fn refresh(
                 node.volatile = true;
                 continue;
             };
-            let Ok(kind) = entry.file_type() else {
-                node.volatile = true;
-                continue;
-            };
-            if kind.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if kind.is_dir()
-                && (name.eq_ignore_ascii_case("System Volume Information")
-                    || name.eq_ignore_ascii_case("$Recycle.Bin"))
+            if entry.is_dir
+                && (entry.name.eq_ignore_ascii_case("System Volume Information")
+                    || entry.name.eq_ignore_ascii_case("$Recycle.Bin"))
             {
                 continue;
             }
-            let stamp = journal::stamp(&path).ok();
             progress.metadata_read.fetch_add(1, Ordering::Relaxed);
-            if stamp
-                .as_ref()
-                .is_some_and(|s| s.reparse || s.is_dir != kind.is_dir())
-            {
-                node.volatile = true;
-                continue;
-            }
-            if kind.is_dir() {
-                let child = match old.remove(&name) {
+            if entry.is_dir {
+                let child = match old.remove(&entry.name) {
                     Some(child)
                         if child.is_dir
-                            && stamp
-                                .as_ref()
-                                .is_some_and(|s| s.id != 0 && s.id == child.file_id) =>
+                            && entry.file_id != 0 && entry.file_id == child.file_id =>
                     {
                         refresh(child, dirty, ancestors, progress)?
                     }
-                    _ => scanner::scan_full(&path, progress.clone(), None, true)?,
+                    _ => scanner::scan_full(&entry.path, progress.clone(), None, true)?,
                 };
                 scanner::append_child(&mut node, child);
-            } else if kind.is_file() {
-                let Ok(metadata) = entry.metadata() else {
-                    node.volatile = true;
-                    continue;
-                };
-                let child = FileNode {
-                    name,
-                    path,
-                    size: stamp.as_ref().map_or(metadata.len(), |s| s.size),
-                    is_dir: false,
-                    file_count: 0,
-                    modified: stamp.as_ref().map_or_else(
-                        || {
-                            metadata
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map_or(0, |d| d.as_secs())
-                        },
-                        |s| s.modified,
-                    ),
-                    children: Vec::new(),
-                    file_id: stamp.as_ref().map_or(0, |s| s.id),
-                    volatile: stamp.as_ref().is_none_or(|s| s.volatile),
-                };
-                scanner::append_child(&mut node, child);
+            } else {
+                scanner::append_child(&mut node, entry);
             }
         }
     }

@@ -83,7 +83,7 @@ window sizes, checks live scan growth/pause/resume/cancel, compares cached scans
 with fresh scans after filesystem changes, verifies reuse across launches, and exercises a
 500,000-file synthetic scan. Inspect the saved screenshots after the run.
 See [the gauntlet guide](docs/GAUNTLET.md) and
-[v0.16.0 validation](docs/QA-v0.16.0.md).
+[v0.16.1 validation](docs/QA-v0.16.1.md).
 
 ## Navigation
 

@@ -1,3 +1,15 @@
+## v0.16.1
+
+- Fix the cold-scan regression introduced by cache seeding in v0.16.0. Read file
+  IDs with bulk directory metadata instead of opening every file for read-data
+  access. Cached rescans retain current metadata checks.
+- Fully expand visible detail before drawing each bounded live preview, avoiding
+  the coarse map frame after every snapshot replacement.
+- Use a global, size-weighted preview budget so completed folders retain detail
+  when the active scan moves deeper into another branch.
+- Run the native live gauntlet with caching enabled, add preview/no-preview/plain
+  throughput comparisons, and assert preview continuity on rendered frames.
+
 ## v0.16.0 - verified repeat-scan cache
 
 - Persist bounded NTFS metadata baselines and validate change-journal continuity
